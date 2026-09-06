@@ -1,0 +1,14 @@
+[Unit]
+Description=pi-gateway (GAIA Telegram gateway)
+After=network-online.target
+
+[Service]
+WorkingDirectory=%h/GAIA
+# @NODE_BIN@ is replaced with the node bin dir by install.sh
+Environment=PATH=@NODE_BIN@:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/GAIA/node_modules/.bin/tsx src/index.ts
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
