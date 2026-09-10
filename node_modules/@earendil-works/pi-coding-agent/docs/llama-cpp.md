@@ -2,6 +2,22 @@
 
 Pi supports the [llama.cpp](https://github.com/ggml-org/llama.cpp) router server. The router discovers multiple GGUF models and loads or unloads them on demand.
 
+## Managed server (default setup)
+
+Pi can manage the router for you. On first interactive startup, choose **llama.cpp** in the provider dialog and pi:
+
+1. Downloads a pinned `llama-server` build to `~/.pi/agent/llama/bin/` (macOS: Metal; Linux/Windows: Vulkan if a Vulkan driver is detected, CPU otherwise). An existing `llama-server` on PATH is used instead.
+2. Starts it in router mode: `--models-dir ~/.pi/agent/llama/models --no-models-autoload --jinja -ngl 999 -c 32768`, listening on `http://127.0.0.1:8080` (set `LLAMA_BASE_URL` to change host/port).
+3. Downloads the default model `Colby/apertus-v1.5-8b-text-Q4_K_M-GGUF` from Hugging Face, loads it, and saves it as the startup default.
+
+On later launches, pi auto-starts the server when the llama.cpp provider is selected and it is not already running. The server intentionally keeps running after pi exits so loaded models stay warm; stop it with **Stop server** in `/llama`.
+
+- `PI_LLAMA_SETUP=0` disables the first-run dialog; `PI_LLAMA_SETUP=1` shows it again.
+- `PI_LLAMA_AUTOSTART=0` disables auto-starting the server at launch.
+- Logs: `~/.pi/agent/llama/server.log`; pidfile: `~/.pi/agent/llama/server.pid`.
+
+## Bring your own server
+
 Use a current llama.cpp build with router support. Follow the [build instructions](https://github.com/ggml-org/llama.cpp/blob/master/docs/build.md) or install a [prebuilt release](https://github.com/ggml-org/llama.cpp/releases) for your platform.
 
 ## Start the router

@@ -12,9 +12,20 @@ scheduled tasks, web research, and local voice — built entirely on pi's SDK, n
   saved to `~/.pi-gateway/research/`, capped in context like Hermes's approach).
 - **`/plan <idea>`**: one-shot spec writer — numbered build plan with file paths and acceptance criteria.
 - **Voice**: replies as Telegram voice notes via local `piper` (+ ffmpeg for OGG/Opus). Incoming
-  transcription (whisper.cpp) is not wired up yet.
+  voice notes are transcribed locally via whisper.cpp (set `"whisperModel": "/path/to/ggml-model.bin"`
+  in the config; needs a `whisper-cli`/`whisper` binary and ffmpeg on PATH).
+- **Bash allowlist**: the built-in bash tool is shadowed by a deny-by-default gate
+  (`src/security.ts`). Every shell segment (`&&`, `;`, `|` split) must match an
+  `"allowedCommands"` pattern (`"git *"`, `"npm test"`); anything else is refused and the agent
+  asks the user, who approves with `/allow <prefix>`. The systemd unit adds OS-level containment
+  (ProtectSystem/ProtectHome/PrivateTmp) as a second layer — see `docs/security-plan.md`.
 
 ## Setup
+
+`./install.sh` also installs and starts a llama.cpp router as a systemd user
+service (pinned build, port 8080), downloads the apertus default model, and
+creates the gateway config interactively (token prompt, chat-id detection,
+llama.cpp + apertus default). Manual setup, if you prefer:
 
 ```bash
 npm install
@@ -37,6 +48,25 @@ npm start
 Model is optional — omit it and pi's default resolution applies (local providers like LM Studio,
 Ollama, vLLM, llama.cpp are built in; see pi's providers doc).
 
+### Docker
+
+Runs as a non-root user with no access to host secrets; the only host path it
+touches is the `~/.pi-gateway` volume. Complements the bash allowlist gate and
+the systemd unit's hardening (see `docs/security-plan.md`).
+
+```bash
+docker build -t pi-gateway .
+docker run -d --name pi-gateway \
+  -v ~/.pi-gateway:/home/gaia/.pi-gateway \
+  --add-host host.docker.internal:host-gateway \
+  pi-gateway
+```
+
+Create `~/.pi-gateway/config.json` first (manual setup above). Point the model
+config at `host.docker.internal` instead of `localhost` — e.g. the llama.cpp
+router is `http://host.docker.internal:8080`. For voice, the `piperVoice` path
+must exist in the container: mount the voice dir (`-v /opt/piper/voices:/opt/piper/voices:ro`).
+
 ## Context-budget discipline
 
 The design targets 32K-token local models:
@@ -49,4 +79,4 @@ The design targets 32K-token local models:
 ## Not built (deliberately)
 
 Skill packs, user modeling, multiple chat platforms, job DSLs, account integrations beyond
-MCP servers (use `pi-mcp-adapter` with community Google/M365 MCP servers). Whisper STT.
+MCP servers (use `pi-mcp-adapter` with community Google/M365 MCP servers).
