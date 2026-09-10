@@ -8,7 +8,8 @@ import {
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { Config } from "./config.js";
 import { webTools } from "./web.js";
-import { loadMemory, memoryTools } from "./memory.js";
+import { loadMemory, memoryTools, takePendingMemoryUpdate } from "./memory.js";
+import { bashGateTool } from "./security.js";
 
 const CHAT_SYSTEM_PROMPT = `You are Gaia (Green AI Assistant), an ecologically-minded AI agent designed to run on clean energy. You have tools (shell, files, web search/fetch, memory) and talk over Telegram.
 
@@ -28,11 +29,13 @@ export class ChatSessions {
 	async get(chatId: number): Promise<AgentSession> {
 		const existing = this.sessions.get(chatId);
 		if (existing) return existing;
-		if (!this.modelRuntime) this.modelRuntime = await ModelRuntime.create();
+		// Without this the catalog refresh skips fetchModels entirely, the llama-cpp
+		// catalog stays empty, and the session falls back to provider "unknown".
+		if (!this.modelRuntime) this.modelRuntime = await ModelRuntime.create({ allowModelNetwork: true });
 		const loader = new DefaultResourceLoader({
 			cwd: process.cwd(),
 			agentDir: `${process.env.HOME}/.pi-gateway/agent`,
-			systemPromptOverride: () => `${CHAT_SYSTEM_PROMPT}\n\nYour long-term memory (curated via the memory tool):\n${loadMemory() || "(empty — save what you learn about the user)"}`,
+			systemPromptOverride: () => CHAT_SYSTEM_PROMPT,
 			appendSystemPromptOverride: () => [],
 		});
 		await loader.reload();
@@ -51,10 +54,20 @@ export class ChatSessions {
 			modelRuntime: this.modelRuntime,
 			model,
 			thinkingLevel: "off",
-			customTools: [...webTools(), ...memoryTools()],
+			customTools: [...webTools(), ...memoryTools(), bashGateTool(this.config)],
+			// no excludeTools: our custom "bash" shadows the built-in by name
 			resourceLoader: loader,
 			sessionManager: SessionManager.create(process.cwd(), `${process.env.HOME}/.pi-gateway/sessions/${chatId}`),
 		});
+		// Memory is appended to the log as custom messages, never prepended to the
+		// system prompt — updates mid-chat reach the next turn without a restart.
+		const snapshot = loadMemory();
+		if (snapshot) {
+			await session.sendCustomMessage(
+				{ customType: "memory", content: `Current long-term memory:\n${snapshot}`, display: false },
+				{ triggerTurn: false },
+			);
+		}
 		this.sessions.set(chatId, session);
 		return session;
 	}
@@ -88,7 +101,7 @@ export async function runOneShot(
 	prompt: string,
 	options?: { tools?: string[]; customTools?: ToolDefinition[] },
 ): Promise<string> {
-	const modelRuntime = await ModelRuntime.create();
+	const modelRuntime = await ModelRuntime.create({ allowModelNetwork: true });
 	const spec = config.model;
 	let model = spec ? (modelRuntime.getModel(spec.provider, spec.id) ?? undefined) : undefined;
 	if (model && spec && (spec.contextWindow !== undefined || spec.maxTokens !== undefined)) {
@@ -103,7 +116,7 @@ export async function runOneShot(
 		model,
 		thinkingLevel: "off",
 		tools: options?.tools,
-		customTools: options?.customTools,
+		customTools: [...(options?.customTools ?? []), bashGateTool(config)],
 		sessionManager: SessionManager.inMemory(),
 	});
 	try {

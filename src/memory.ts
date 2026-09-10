@@ -6,8 +6,9 @@ import { stateDir } from "./config.js";
 
 // ============================================================================
 // Long-term memory for a short-context agent. Two tools, no deps, no index:
-//  - memory:   semantic memory. A single capped MEMORY.md injected into the
-//              system prompt; the agent curates it with save/forget.
+//  - memory:   semantic memory. A single capped MEMORY.md; snapshots are
+//              appended to the session as custom messages (not prepended to
+//              the system prompt); the agent curates it with save/forget.
 //  - recall:   episodic memory. Grep over persisted session logs — unlimited
 //              lookback for zero standing token cost.
 // ============================================================================
@@ -22,6 +23,15 @@ export function loadMemory(): string {
 	} catch {
 		return "";
 	}
+}
+
+/** Latest memory-tool change, drained by the caller and appended to the session log. */
+let pendingMemoryUpdate: string | null = null;
+
+export function takePendingMemoryUpdate(): string | null {
+	const p = pendingMemoryUpdate;
+	pendingMemoryUpdate = null;
+	return p;
 }
 
 export function memoryTools(): ToolDefinition[] {
@@ -53,6 +63,7 @@ export function memoryTools(): ToolDefinition[] {
 				while (next.length > MEMORY_CHAR_LIMIT && lines.length > 1) lines.shift();
 				next = lines.join("\n").slice(-MEMORY_CHAR_LIMIT);
 				writeFileSync(MEMORY_FILE, next);
+				pendingMemoryUpdate = `Remembered: ${line}`;
 				return { content: [{ type: "text" as const, text: "Saved to memory." }], details: undefined };
 			}
 			// forget
@@ -61,6 +72,7 @@ export function memoryTools(): ToolDefinition[] {
 				.split("\n")
 				.filter((l) => !phrase || !l.toLowerCase().includes(phrase.toLowerCase()));
 			writeFileSync(MEMORY_FILE, kept.join("\n"));
+			pendingMemoryUpdate = `Memory updated (removed ${current.split("\n").length - kept.length} line(s)). Current memory:\n${kept.join("\n").trim() || "(empty)"}`;
 			return {
 				content: [{ type: "text" as const, text: `Removed ${current.split("\n").length - kept.length} line(s).` }],
 				details: undefined,

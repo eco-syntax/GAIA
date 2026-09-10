@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -24,6 +24,10 @@ export interface Config {
 		maxTokens?: number; };
 	/** Piper TTS voice; omit to disable voice replies. */
 	piperVoice?: string;
+	/** whisper.cpp ggml model for voice-note transcription; omit to ignore voice messages. */
+	whisperModel?: string;
+	/** Bash allowlist patterns ("git *", "npm test"); every shell segment must match one. Empty = bash fully denied. */
+	allowedCommands?: string[];
 	schedules: Schedule[];
 }
 
@@ -37,9 +41,21 @@ export function loadConfig(): Config {
 		allowedChatIds: raw.allowedChatIds ?? [],
 		model: raw.model,
 		piperVoice: raw.piperVoice,
+		whisperModel: raw.whisperModel,
+		allowedCommands: raw.allowedCommands ?? [],
 		schedules: raw.schedules ?? [],
 	};
 }
 
 export const stateDir = STATE_DIR;
 export const researchDir = join(STATE_DIR, "research");
+
+/** Add a bash allowlist pattern: update the in-memory config AND persist it. */
+export function addAllowedCommand(config: Config, pattern: string): void {
+	config.allowedCommands = [...(config.allowedCommands ?? [])];
+	if (!config.allowedCommands.includes(pattern)) config.allowedCommands.push(pattern);
+	const path = join(STATE_DIR, "config.json");
+	const raw = JSON.parse(readFileSync(path, "utf8")) as Partial<Config>;
+	raw.allowedCommands = config.allowedCommands;
+	writeFileSync(path, JSON.stringify(raw, null, 2) + "\n", { mode: 0o600 });
+}

@@ -12,6 +12,7 @@ interface TgUpdate {
 	message?: {
 		chat: { id: number };
 		text?: string;
+		voice?: { file_id: string };
 		chat_type?: string;
 	};
 }
@@ -70,12 +71,21 @@ export async function deleteMessage(token: string, chatId: number, messageId: nu
 	}
 }
 
-/** Long-poll updates. Yields { chatId, text } per text message. */
+/** Download a voice message's audio (OGG/Opus) by file_id. */
+export async function getVoice(token: string, fileId: string): Promise<Buffer> {
+	const file = (await tg(token, "getFile", { file_id: fileId })) as { file_path?: string };
+	if (!file.file_path) throw new Error("telegram getFile: no file_path");
+	const res = await fetch(`https://api.telegram.org/file/bot${token}/${file.file_path}`);
+	if (!res.ok) throw new Error(`telegram file download: ${res.status}`);
+	return Buffer.from(await res.arrayBuffer());
+}
+
+/** Long-poll updates. Yields { chatId, text?, voiceFileId? } per message. */
 export async function* pollMessages(
 	token: string,
 	allowedChatIds: number[],
 	signal: AbortSignal,
-): AsyncGenerator<{ chatId: number; text: string }> {
+): AsyncGenerator<{ chatId: number; text?: string; voiceFileId?: string }> {
 	let offset = 0;
 	// Ignore updates older than startup: Telegram redelivers unconfirmed
 	// updates after a restart, which would re-run old turns after a crash.
@@ -89,12 +99,12 @@ export async function* pollMessages(
 			})) as TgUpdate[];
 			for (const u of updates ?? []) {
 				const msg = u.message;
-				if (!msg?.text) continue;
+				if (!msg?.text && !msg?.voice) continue;
 				offset = Math.max(offset, (u as { update_id: number }).update_id + 1);
 				if (allowedChatIds.length > 0 && !allowedChatIds.includes(msg.chat.id)) continue;
 				const date = (msg as { date?: number }).date;
 				if (date !== undefined && date < startedAt) continue;
-				yield { chatId: msg.chat.id, text: msg.text };
+				yield { chatId: msg.chat.id, text: msg.text, voiceFileId: msg.voice?.file_id };
 			}
 		} catch (err) {
 			if (signal.aborted) return;
