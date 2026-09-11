@@ -166,7 +166,8 @@ for await (const { chatId, text: rawText, voiceFileId } of pollMessages(config.t
 						{ triggerTurn: false },
 					);
 				}
-				await deliver(chatId, lastAssistantText(session), true);
+				// Voice in → voice out; text stays text.
+				await deliver(chatId, lastAssistantText(session), Boolean(voiceFileId));
 			} finally {
 				stopTyping();
 				stopWatching();
