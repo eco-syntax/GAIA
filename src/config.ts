@@ -47,6 +47,15 @@ export function loadConfig(): Config {
 	};
 }
 
+/** Set the default model: update the in-memory config AND persist it. */
+export function setModel(config: Config, model: Config["model"]): void {
+	config.model = model;
+	const path = join(STATE_DIR, "config.json");
+	const raw = JSON.parse(readFileSync(path, "utf8")) as Partial<Config>;
+	raw.model = model;
+	writeFileSync(path, JSON.stringify(raw, null, 2) + "\n", { mode: 0o600 });
+}
+
 export const stateDir = STATE_DIR;
 export const researchDir = join(STATE_DIR, "research");
 

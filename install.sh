@@ -131,8 +131,10 @@ else
 	mkdir -p "$tmp/x" "$LLAMA_DIR/bin"
 	tar -xzf "$tmp/a.tgz" -C "$tmp/x"
 	# ship the whole dir: llama-server needs its side-by-side libs (RUNPATH $ORIGIN);
-	# cp -a keeps the .so symlinks (libggml-base.so.0 -> ...) that find -type f drops
-	cp -a "$tmp/x/." "$LLAMA_DIR/bin/"
+	# cp -a keeps the .so symlinks (libggml-base.so.0 -> ...) that find -type f drops.
+	# newer release tarballs nest everything in a top-level dir — install from beside the binary
+	bindir=$(dirname "$(find "$tmp/x" -name llama-server -type f | head -1)")
+	cp -a "$bindir/." "$LLAMA_DIR/bin/"
 	chmod -R 755 "$LLAMA_DIR/bin"
 	rm -rf "$tmp"
 fi

@@ -3,7 +3,9 @@ import { EnvHttpProxyAgent, setGlobalDispatcher } from "undici";
 
 // Node's global fetch ignores HTTPS_PROXY by default; telegram.ts and web.ts
 // use undici's fetch, which honors HTTP(S)_PROXY/NO_PROXY via this agent.
-setGlobalDispatcher(new EnvHttpProxyAgent());
+// allowH2:false — Telegram's HTTP/2 endpoint kills long-poll streams mid-flight
+// (~every 2 min), losing getUpdates responses and churning the poll loop.
+setGlobalDispatcher(new EnvHttpProxyAgent({ allowH2: false }));
 const proxyUrl = process.env.HTTPS_PROXY ?? process.env.https_proxy;
 if (proxyUrl) console.log(`using proxy ${proxyUrl}`);
 import { deleteMessage, getVoice, pollMessages, sendMessage, sendTyping, sendVoice } from "./telegram.js";
@@ -122,6 +124,17 @@ for await (const { chatId, text: rawText, voiceFileId } of pollMessages(config.t
 				}
 				continue;
 			}
+			if (prompt === "/model" || prompt.startsWith("/model ")) {
+				const arg = prompt.slice(6).trim();
+				if (!arg) {
+					const models = await chats.models();
+					await sendMessage(config.telegramBotToken, chatId, `Available models:\n${models.join("\n")}\n\nSwitch with /model provider/id`);
+				} else {
+					const err = await chats.switchModel(arg);
+					await sendMessage(config.telegramBotToken, chatId, err ?? `Model set to ${arg} — new sessions use it`);
+				}
+				continue;
+			}
 			if (prompt === "/start" || prompt === "/new") {
 				chats.reset(chatId);
 				await sendMessage(config.telegramBotToken, chatId, "Fresh session started");
@@ -138,6 +151,8 @@ for await (const { chatId, text: rawText, voiceFileId } of pollMessages(config.t
 				continue;
 			}
 			const session = await chats.get(chatId);
+			const modelWarning = chats.takeWarning(chatId);
+			if (modelWarning) await sendMessage(config.telegramBotToken, chatId, `⚠️ ${modelWarning}`);
 			const stopTyping = startTypingIndicator(config.telegramBotToken, chatId);
 			const stopWatching = watchToolActivity(session, config.telegramBotToken, chatId);
 			try {

@@ -6,6 +6,7 @@ import {
 	type AgentSession,
 } from "@earendil-works/pi-coding-agent";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { setModel } from "./config.js";
 import type { Config } from "./config.js";
 import { webTools } from "./web.js";
 import { loadMemory, memoryTools, takePendingMemoryUpdate } from "./memory.js";
@@ -20,18 +21,55 @@ Work: use tools for real actions and real facts. Run the thing, then report what
 Memory: save durable user facts and reusable techniques with the memory tool. Skip anything stale in a week — task logs, IDs, statuses. Use the recall tool to search past conversations when memory isn't enough.
 
 Frugality is part of your identity: prefer the smallest model, shortest prompt, fewest tool calls that get the job done — wasted compute is wasted energy.`;
+
+/** Resolve the configured model against the live catalog. Falls back to another
+ * model from the same provider (or pi's default resolution) with a warning
+ * instead of hard-failing when the configured entry is missing — e.g. a local
+ * server that is down or a catalog that has not refreshed yet. */
+function resolveConfiguredModel(
+	runtime: ModelRuntime,
+	spec: Config["model"],
+): { model?: NonNullable<ReturnType<ModelRuntime["getModel"]>>; warning?: string } {
+	if (!spec) return {};
+	const model = runtime.getModel(spec.provider, spec.id) ?? undefined;
+	if (model) {
+		if (spec.contextWindow === undefined && spec.maxTokens === undefined) return { model };
+		// Local servers don't report their real context; let config override the
+		// catalog guess so pi compacts before the server silently truncates.
+		return {
+			model: {
+				...model,
+				contextWindow: spec.contextWindow ?? model.contextWindow,
+				maxTokens: spec.maxTokens ?? model.maxTokens,
+			},
+		};
+	}
+	const fallback = runtime.getModels(spec.provider)[0] ?? undefined;
+	return {
+		model: fallback,
+		warning: fallback
+			? `Configured model ${spec.provider}/${spec.id} not found — using ${fallback.provider}/${fallback.id} instead`
+			: `Configured model ${spec.provider}/${spec.id} not found — using pi's default model`,
+	};
+}
 /** One pi session per chat, held in memory. Sessions persist to disk via SessionManager. */
 export class ChatSessions {
 	private sessions = new Map<number, AgentSession>();
 	private modelRuntime: ModelRuntime | undefined;
+	private warnings = new Map<number, string>();
 	constructor(private config: Config) {}
+
+	private async runtime(): Promise<ModelRuntime> {
+		// Without allowModelNetwork the catalog refresh skips fetchModels entirely,
+		// local catalogs stay empty, and the session falls back to provider "unknown".
+		if (!this.modelRuntime) this.modelRuntime = await ModelRuntime.create({ allowModelNetwork: true });
+		return this.modelRuntime;
+	}
 
 	async get(chatId: number): Promise<AgentSession> {
 		const existing = this.sessions.get(chatId);
 		if (existing) return existing;
-		// Without this the catalog refresh skips fetchModels entirely, the llama-cpp
-		// catalog stays empty, and the session falls back to provider "unknown".
-		if (!this.modelRuntime) this.modelRuntime = await ModelRuntime.create({ allowModelNetwork: true });
+		const runtime = await this.runtime();
 		const loader = new DefaultResourceLoader({
 			cwd: process.cwd(),
 			agentDir: `${process.env.HOME}/.pi-gateway/agent`,
@@ -39,19 +77,10 @@ export class ChatSessions {
 			appendSystemPromptOverride: () => [],
 		});
 		await loader.reload();
-		const spec = this.config.model;
-		let model = spec ? (this.modelRuntime.getModel(spec.provider, spec.id) ?? undefined) : undefined;
-		// Local servers don't report their real context; let config override the
-		// catalog guess so pi compacts before the server silently truncates.
-		if (model && spec && (spec.contextWindow !== undefined || spec.maxTokens !== undefined)) {
-			model = {
-				...model,
-				contextWindow: spec.contextWindow ?? model.contextWindow,
-				maxTokens: spec.maxTokens ?? model.maxTokens,
-			};
-		}
+		const { model, warning } = resolveConfiguredModel(runtime, this.config.model);
+		if (warning) this.warnings.set(chatId, warning);
 		const { session } = await createAgentSession({
-			modelRuntime: this.modelRuntime,
+			modelRuntime: runtime,
 			model,
 			thinkingLevel: "off",
 			customTools: [...webTools(), ...memoryTools(), bashGateTool(this.config)],
@@ -75,6 +104,33 @@ export class ChatSessions {
 	/** Drop the in-memory session so the next get() starts fresh. Log stays on disk. */
 	reset(chatId: number): void {
 		this.sessions.delete(chatId);
+	}
+
+	/** Pop the pending model-fallback warning for a chat, if any. */
+	takeWarning(chatId: number): string | undefined {
+		const warning = this.warnings.get(chatId);
+		this.warnings.delete(chatId);
+		return warning;
+	}
+
+	/** Every selectable model as "provider/id". */
+	async models(): Promise<string[]> {
+		return (await this.runtime()).getModels().map((m) => `${m.provider}/${m.id}`);
+	}
+
+	/** Validate a "provider/id" switch, persist it, and drop live sessions so
+	 * the next message picks it up. Returns an error message, or null on success. */
+	async switchModel(spec: string): Promise<string | null> {
+		const slash = spec.indexOf("/");
+		if (slash <= 0 || slash === spec.length - 1) return `Expected provider/id, got "${spec}"`;
+		const provider = spec.slice(0, slash);
+		const id = spec.slice(slash + 1);
+		const runtime = await this.runtime();
+		if (!runtime.getProvider(provider)) return `Unknown provider "${provider}"`;
+		if (!runtime.getModel(provider, id)) return `${provider}/${id} is not in the model catalog`;
+		setModel(this.config, { provider, id });
+		this.sessions.clear();
+		return null;
 	}
 }
 
@@ -102,15 +158,7 @@ export async function runOneShot(
 	options?: { tools?: string[]; customTools?: ToolDefinition[] },
 ): Promise<string> {
 	const modelRuntime = await ModelRuntime.create({ allowModelNetwork: true });
-	const spec = config.model;
-	let model = spec ? (modelRuntime.getModel(spec.provider, spec.id) ?? undefined) : undefined;
-	if (model && spec && (spec.contextWindow !== undefined || spec.maxTokens !== undefined)) {
-		model = {
-			...model,
-			contextWindow: spec.contextWindow ?? model.contextWindow,
-			maxTokens: spec.maxTokens ?? model.maxTokens,
-		};
-	}
+	const { model, warning } = resolveConfiguredModel(modelRuntime, config.model);
 	const { session } = await createAgentSession({
 		modelRuntime,
 		model,
@@ -121,7 +169,8 @@ export async function runOneShot(
 	});
 	try {
 		await session.prompt(systemPrompt ? `${systemPrompt}\n\n${prompt}` : prompt);
-		return lastAssistantText(session);
+		const text = lastAssistantText(session);
+		return warning ? `${warning}\n\n${text}` : text;
 	} finally {
 		session.dispose();
 	}
