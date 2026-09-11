@@ -9,7 +9,7 @@ setGlobalDispatcher(new EnvHttpProxyAgent({ allowH2: false }));
 const proxyUrl = process.env.HTTPS_PROXY ?? process.env.https_proxy;
 if (proxyUrl) console.log(`using proxy ${proxyUrl}`);
 import { deleteMessage, getVoice, pollMessages, sendMessage, sendTyping, sendVoice } from "./telegram.js";
-import { ChatSessions, lastAssistantText, runOneShot } from "./session.js";
+import { ChatSessions, runOneShot, turnOutcome, type TurnOutcome } from "./session.js";
 import { takePendingMemoryUpdate } from "./memory.js";
 import { webTools } from "./web.js";
 import { startScheduler } from "./schedules.js";
@@ -23,6 +23,48 @@ const useTts = config.piperVoice ? ttsAvailable(config.piperVoice) : false;
 if (config.piperVoice && !useTts) console.warn("piper not found or voice model missing; voice replies disabled");
 const useStt = config.whisperModel ? sttAvailable(config.whisperModel) : false;
 if (config.whisperModel && !useStt) console.warn("whisper.cpp not found or model missing; voice messages ignored");
+
+/** Undici hides the real network reason in `err.cause`; surface it so the user
+ * sees why the turn failed instead of a bare "TypeError: fetch failed". */
+function describeError(err: unknown): string {
+	if (!(err instanceof Error)) return String(err);
+	const cause = (err as { cause?: unknown }).cause;
+	if (cause instanceof Error && cause.message) {
+		const code = (cause as { code?: string }).code;
+		return code ? `${cause.message} (${code})` : cause.message;
+	}
+	return err.message;
+}
+
+/** Upstream provider died mid-request (stream stall, timeout). pi's SDK retry
+ * list doesn't cover "stalled", so these end the turn silently. */
+const STALL_ERROR = /stalled|no data received|timed?.?out|timeout|connection.?(lost|reset|closed)/i;
+
+/** One silent retry when the model stream dies before answering. Only when the
+ * failed turn produced no tool results — a retry after side effects (shell
+ * commands!) could double-execute them. Mirrors pi's own retry: drop the
+ * errored assistant message, then continue from the queued user prompt. */
+async function retryStalledTurn(session: Parameters<typeof turnOutcome>[0], before: number): Promise<void> {
+	const outcome = turnOutcome(session, before);
+	if (!outcome.error || !STALL_ERROR.test(outcome.error)) return;
+	const failed = session.messages.slice(before);
+	if (failed.some((m) => (m as { role?: string }).role === "toolResult")) return;
+	console.warn(`model stream stalled with no tool side effects — retrying once: ${outcome.error}`);
+	const messages = session.agent.state.messages;
+	const last = messages[messages.length - 1] as { role?: string; stopReason?: string } | undefined;
+	if (last?.role === "assistant" && last.stopReason === "error") messages.pop();
+	await session.agent.continue();
+}
+
+/** Deliver the turn result. Failed turns report the error as plain text —
+ * never as a synthesized voice note saying "(no response)". */
+async function deliverOutcome(chatId: number, outcome: TurnOutcome, voice: boolean): Promise<void> {
+	if (outcome.error) {
+		await deliver(chatId, `Model error: ${outcome.error}`);
+		return;
+	}
+	await deliver(chatId, outcome.text ?? "(no response)", voice);
+}
 
 async function deliver(chatId: number, text: string, voice = false): Promise<void> {
 	if (voice && useTts && config.piperVoice) {
@@ -156,7 +198,9 @@ for await (const { chatId, text: rawText, voiceFileId } of pollMessages(config.t
 			const stopTyping = startTypingIndicator(config.telegramBotToken, chatId);
 			const stopWatching = watchToolActivity(session, config.telegramBotToken, chatId);
 			try {
+				const before = session.messages.length;
 				await session.prompt(prompt);
+				await retryStalledTurn(session, before);
 				// Memory updates are appended to the log as custom messages (DeepSeek-harness
 				// style), so they reach the next turn without a session restart.
 				const memUpdate = takePendingMemoryUpdate();
@@ -167,13 +211,13 @@ for await (const { chatId, text: rawText, voiceFileId } of pollMessages(config.t
 					);
 				}
 				// Voice in → voice out; text stays text.
-				await deliver(chatId, lastAssistantText(session), Boolean(voiceFileId));
+				await deliverOutcome(chatId, turnOutcome(session, before), Boolean(voiceFileId));
 			} finally {
 				stopTyping();
 				stopWatching();
 			}
 	} catch (err) {
 		console.error("turn failed:", err);
-		await deliver(chatId, `Error: ${err}`).catch(() => {});
+		await deliver(chatId, `Error: request failed — ${describeError(err)}. Please resend.`).catch(() => {});
 	}
 }

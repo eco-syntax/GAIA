@@ -136,20 +136,35 @@ export class ChatSessions {
 	}
 }
 
-/** Final assistant text of the last completed turn. */
-export function lastAssistantText(session: AgentSession): string {
+export interface TurnOutcome {
+	/** Final assistant text, if the turn produced any. */
+	text?: string;
+	/** Provider error message when the turn failed (stream stall, abort, …). */
+	error?: string;
+}
+
+/** Outcome of the turn whose messages start at index `since`. Scanning only the
+ * turn's own messages matters: a failed turn must not replay an earlier reply.
+ * pi resolves session.prompt() even when the model stream dies (stopReason
+ * "error"), so callers must check this instead of assuming text. */
+export function turnOutcome(session: AgentSession, since: number): TurnOutcome {
 	const messages = session.messages;
-	for (let i = messages.length - 1; i >= 0; i--) {
+	for (let i = messages.length - 1; i >= since; i--) {
 		const m = messages[i];
 		if (!m || m.role !== "assistant") continue;
+		const stop = (m as { stopReason?: string; errorMessage?: string }).stopReason;
+		if (stop === "error") {
+			return { error: (m as { errorMessage?: string }).errorMessage ?? "model error" };
+		}
+		if (stop === "aborted") return { error: "turn aborted" };
 		const text = (m as { content: { type: string; text?: string }[] }).content
 			.filter((b) => b.type === "text")
 			.map((b) => b.text ?? "")
 			.join("\n")
 			.trim();
-		if (text) return text;
+		if (text) return { text };
 	}
-	return "(no response)";
+	return {};
 }
 
 /** Run a one-shot headless turn and return the final text. */
@@ -171,7 +186,8 @@ export async function runOneShot(
 	});
 	try {
 		await session.prompt(systemPrompt ? `${systemPrompt}\n\n${prompt}` : prompt);
-		const text = lastAssistantText(session);
+		const outcome = turnOutcome(session, 0);
+		const text = outcome.error ? `Error: ${outcome.error}` : (outcome.text ?? "(no response)");
 		return warning ? `${warning}\n\n${text}` : text;
 	} finally {
 		session.dispose();
