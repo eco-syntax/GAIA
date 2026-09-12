@@ -10,6 +10,7 @@ scheduled tasks, web research, and local voice — built entirely on pi's SDK, n
   gateway runs a headless pi turn on a timer and delivers the result to the chat. No job types, no DSL.
 - **Web research**: built-in `websearch` + `fetchpage` tools (DuckDuckGo, no API keys; full page text
   saved to `~/.pi-gateway/research/`, capped in context like Hermes's approach).
+- **Memory & recall**: durable user facts live in a capped `MEMORY.md`, injected as session messages (never into the system prompt). The `recall` tool is full-text search (SQLite FTS5, incrementally indexed) over all persisted session logs, with a one-shot LLM summary of the hits — Hermes-style cross-session recall, also delivered as a tool result.
 - **`/plan <idea>`**: one-shot spec writer — numbered build plan with file paths and acceptance criteria.
 - **Voice**: replies as Telegram voice notes via local `piper` (+ ffmpeg for OGG/Opus). Incoming
   voice notes are transcribed locally via whisper.cpp (set `"whisperModel": "/path/to/ggml-model.bin"`
