@@ -272,7 +272,10 @@ for await (const { chatId, text: rawText, voiceFileId } of pollMessages(config.t
 		const active = activeTurns.get(chatId);
 		if (active) await active();
 		if (prompt === "/stop") {
-			const abort = activeTurns.get(chatId);
+			// The interrupt above may have already finished the turn and cleaned
+			// up its hook; fall back to the pre-abort snapshot so /stop never
+			// claims "Nothing running" right after it stopped a turn.
+			const abort = activeTurns.get(chatId) ?? active;
 			if (abort) {
 				await abort();
 				await sendMessage(config.telegramBotToken, chatId, "Stopped.");
