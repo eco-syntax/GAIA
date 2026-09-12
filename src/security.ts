@@ -1,4 +1,4 @@
-import { Type } from "typebox";
+import { Type } from "@sinclair/typebox";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
