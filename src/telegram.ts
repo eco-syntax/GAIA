@@ -192,8 +192,9 @@ export async function* pollMessages(
 	const startedAt = Math.floor(Date.now() / 1000) - 60;
 	// Telegram redelivers an update when a long-poll response is lost
 	// (flaky connections), and clients double-send messages; without a dedup
-	// each copy runs a full turn and sends a duplicate reply.
-	const seenUpdates = new Set<number>();
+	// each copy runs a full turn and sends a duplicate reply. A redelivered
+	// update has an identical chatId:date:text fingerprint, so a single
+	// fingerprint set suffices — no separate update_id dedup needed.
 	const seenMsgs = new Map<string, true>(); // chatId:date:fingerprint → recent
 	const remember = (key: string): boolean => {
 		if (seenMsgs.has(key)) return false;
@@ -213,9 +214,6 @@ export async function* pollMessages(
 				// Confirm every update exactly once, even ones we skip — otherwise a
 				// lone photo/sticker re-pollutes every subsequent getUpdates response.
 				offset = Math.max(offset, updateId + 1);
-				if (seenUpdates.has(updateId)) continue;
-				seenUpdates.add(updateId);
-				if (seenUpdates.size > 500) seenUpdates.delete(seenUpdates.values().next().value!);
 				const msg = u.message;
 				if (!msg?.text && !msg?.voice) continue;
 				if (allowedChatIds.length > 0 && !allowedChatIds.includes(msg.chat.id)) continue;
