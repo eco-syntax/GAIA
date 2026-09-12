@@ -1,4 +1,4 @@
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 import { fetch } from "undici";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { mkdirSync, writeFileSync } from "node:fs";
