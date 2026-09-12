@@ -18,6 +18,21 @@ GAIA_DIR="${GAIA_DIR:-$HOME/GAIA}"
 BIN_DIR="${BIN_DIR:-$HOME/.local/bin}"
 
 need() { command -v "$1" >/dev/null || { echo "missing dependency: $1" >&2; exit 1; }; }
+
+# print JSON mapping "@scope/name" → "file:<path>.tgz" for every tarball in $1/tarballs
+tarball_deps() {
+	node - "$1" <<'EOF'
+const fs = require("fs");
+const dir = `${process.argv[2]}/tarballs`;
+const deps = {};
+for (const f of fs.readdirSync(dir).filter((f) => f.endsWith(".tgz"))) {
+	const m = f.slice(0, -4).match(/^(.*)-(\d+\..*)$/); // "@earendil-works+pi-ai-0.85.2" → scope+name, version
+	if (!m) throw new Error(`unexpected tarball name: ${f}`);
+	deps[m[1].replace("+", "/")] = `file:${dir}/${f}`;
+}
+console.log(JSON.stringify(deps));
+EOF
+}
 need git
 need npm
 node_major=$(node -p 'process.versions.node.split(".")[0]')
@@ -52,16 +67,11 @@ node scripts/local-release.mjs \
 
 echo "==> 4/6 isolated greenpi install at $GREENPI_HOME/node"
 mkdir -p "$GREENPI_HOME/node"
-node - "$GREENPI_HOME" <<'EOF'
+deps=$(tarball_deps "$GREENPI_HOME")
+node - "$GREENPI_HOME" "$deps" <<'EOF'
 const fs = require("fs");
-const home = process.argv[2];
-const dir = `${home}/tarballs`;
-const deps = {};
-for (const f of fs.readdirSync(dir).filter((f) => f.endsWith(".tgz"))) {
-	const m = f.slice(0, -4).match(/^(.*)-(\d+\..*)$/); // "@earendil-works+pi-ai-0.85.2" → scope+name, version
-	if (!m) throw new Error(`unexpected tarball name: ${f}`);
-	deps[m[1].replace("+", "/")] = `file:${dir}/${f}`;
-}
+const [home, depsJson] = process.argv.slice(2);
+const deps = JSON.parse(depsJson);
 fs.writeFileSync(
 	`${home}/node/package.json`,
 	JSON.stringify({ private: true, dependencies: deps, overrides: deps }, null, "\t") + "\n",
@@ -79,18 +89,13 @@ echo "==> 5/6 wire GAIA ($GAIA_DIR) to the GreenPi tarballs"
 	# point the two pi deps at the fork AND override every internal @earendil-works dep with the
 	# fork's tarballs — otherwise nested deps resolve from the npm registry (upstream pi) and the
 	# local-first provider changes in packages/ai silently don't ship
-	node - "$GAIA_DIR" "$GREENPI_HOME" <<'EOF'
+	deps=$(tarball_deps "$GREENPI_HOME")
+	node - "$GAIA_DIR" "$deps" <<'EOF'
 const fs = require("fs");
-const [gaia, home] = process.argv.slice(2);
-const dir = `${home}/tarballs`;
+const [gaia, depsJson] = process.argv.slice(2);
+const deps = JSON.parse(depsJson);
 const p = `${gaia}/package.json`;
 const pkg = JSON.parse(fs.readFileSync(p, "utf8"));
-const deps = {};
-for (const f of fs.readdirSync(dir).filter((f) => f.endsWith(".tgz"))) {
-	const m = f.slice(0, -4).match(/^(.*)-(\d+\..*)$/);
-	if (!m) throw new Error(`unexpected tarball name: ${f}`);
-	deps[m[1].replace("+", "/")] = `file:${dir}/${f}`;
-}
 for (const dep of ["@earendil-works/pi-coding-agent", "@earendil-works/pi-server"]) {
 	pkg.dependencies[dep] = deps[dep];
 }
