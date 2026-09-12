@@ -1,16 +1,19 @@
 import { Type } from "@sinclair/typebox";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { stateDir } from "./config.js";
+import { DatabaseSync } from "node:sqlite";
+import { stateDir, type Config } from "./config.js";
 
 // ============================================================================
-// Long-term memory for a short-context agent. Two tools, no deps, no index:
+// Long-term memory for a short-context agent:
 //  - memory:   semantic memory. A single capped MEMORY.md; snapshots are
 //              appended to the session as custom messages (not prepended to
 //              the system prompt); the agent curates it with save/forget.
-//  - recall:   episodic memory. Grep over persisted session logs — unlimited
-//              lookback for zero standing token cost.
+//  - recall:   episodic memory. FTS5 full-text index over persisted session
+//              logs (node:sqlite, no deps) plus one-shot LLM summarization of
+//              the hits. Everything rides back as the tool result — a tool
+//              message, never a system-prompt injection.
 // ============================================================================
 
 const MEMORY_FILE = join(stateDir, "MEMORY.md");
@@ -25,6 +28,90 @@ export function loadMemory(): string {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// FTS5 index over session logs (sessions/<chatId>/<uuid>.jsonl). Incremental:
+// files are re-parsed only when mtime or size changed. ponytail: a mid-file
+// rewrite that keeps size AND mtime identical is invisible; pi appends or
+// rewrites with fresh mtimes, so that never happens in practice.
+// ---------------------------------------------------------------------------
+const RECALL_DB = join(stateDir, "recall.db");
+
+let recallDb: DatabaseSync | undefined;
+
+function openRecallDb(): DatabaseSync {
+	if (recallDb) return recallDb;
+	mkdirSync(stateDir, { recursive: true });
+	const db = new DatabaseSync(RECALL_DB);
+	db.exec("CREATE VIRTUAL TABLE IF NOT EXISTS chunks USING fts5(path UNINDEXED, chat UNINDEXED, ts UNINDEXED, role UNINDEXED, text)");
+	db.exec("CREATE TABLE IF NOT EXISTS files (path TEXT PRIMARY KEY, mtime REAL, size INTEGER)");
+	recallDb = db;
+	return db;
+}
+
+function messageText(content: unknown): string {
+	return (Array.isArray(content) ? content : [])
+		.map((b) => (b && typeof b === "object" && (b as { type?: string; text?: string }).type === "text" ? (b as { text?: string }).text ?? "" : ""))
+		.join(" ");
+}
+
+/** Bring the FTS5 index up to date with the session logs on disk. */
+function indexSessionLogs(): void {
+	const db = openRecallDb();
+	const sessionsDir = join(stateDir, "sessions");
+	if (!existsSync(sessionsDir)) return;
+	const seen = new Set<string>();
+	for (const chat of readdirSync(sessionsDir)) {
+		const chatDir = join(sessionsDir, chat);
+		let logFiles: string[];
+		try {
+			logFiles = readdirSync(chatDir).filter((f) => f.endsWith(".jsonl"));
+		} catch {
+			continue; // not a directory
+		}
+		for (const file of logFiles) {
+			const path = join(chatDir, file);
+			seen.add(path);
+			const st = statSync(path);
+			const known = db.prepare("SELECT mtime, size FROM files WHERE path = ?").get(path) as
+				| { mtime: number; size: number }
+				| undefined;
+			if (known && known.mtime === st.mtimeMs && known.size === st.size) continue;
+			db.prepare("DELETE FROM chunks WHERE rowid IN (SELECT rowid FROM chunks WHERE path = ?)").run(path);
+			const insert = db.prepare("INSERT INTO chunks (path, chat, ts, role, text) VALUES (?, ?, ?, ?, ?)");
+			// One entry per line: {type:"message", message:{role, content}, timestamp, ...}
+			for (const line of readFileSync(path, "utf8").split("\n")) {
+				if (!line.trim()) continue;
+				let entry: { type?: string; timestamp?: string; message?: { role?: string; content?: unknown } };
+				try {
+					entry = JSON.parse(line);
+				} catch {
+					continue;
+				}
+				if (entry.type !== "message") continue;
+				const text = messageText(entry.message?.content).trim();
+				if (!text) continue;
+				insert.run(path, chat, entry.timestamp ?? "", entry.message?.role ?? "", text);
+			}
+			db.prepare("INSERT OR REPLACE INTO files (path, mtime, size) VALUES (?, ?, ?)").run(path, st.mtimeMs, st.size);
+		}
+	}
+	for (const { path } of db.prepare("SELECT path FROM files").all() as { path: string }[]) {
+		if (!seen.has(path)) {
+			db.prepare("DELETE FROM chunks WHERE rowid IN (SELECT rowid FROM chunks WHERE path = ?)").run(path);
+			db.prepare("DELETE FROM files WHERE path = ?").run(path);
+		}
+	}
+}
+
+/** Quote each term so free-text queries can't inject FTS5 syntax; AND by default. */
+function ftsQuery(q: string): string {
+	return q
+		.split(/\s+/)
+		.filter(Boolean)
+		.map((t) => `"${t.replaceAll('"', '""')}"`)
+		.join(" ");
+}
+
 /** Latest memory-tool change, drained by the caller and appended to the session log. */
 let pendingMemoryUpdate: string | null = null;
 
@@ -34,7 +121,7 @@ export function takePendingMemoryUpdate(): string | null {
 	return p;
 }
 
-export function memoryTools(): ToolDefinition[] {
+export function memoryTools(config: Config): ToolDefinition[] {
 	const memory = defineTool({
 		name: "memory",
 		label: "Memory",
@@ -84,57 +171,55 @@ export function memoryTools(): ToolDefinition[] {
 		name: "recall",
 		label: "Recall",
 		description:
-			"Search past conversation logs (all chats, all time). Use when you need something discussed before that isn't in your current context or MEMORY.md. Returns matching snippets with chat and date.",
+			"Search past conversation logs (all chats, all time). Use when you need something discussed before that isn't in your current context or MEMORY.md. Returns an LLM summary of what past conversations said about the query, plus the matching excerpts with chat and date.",
 		parameters: Type.Object({
-			query: Type.String({ description: "Text to search for (case-insensitive)" }),
-			limit: Type.Optional(Type.Number({ description: "Max snippets (default 5)" })),
+			query: Type.String({ description: "Search terms; every term must appear (AND). Use several specific keywords, not sentences." }),
+			limit: Type.Optional(Type.Number({ description: "Max excerpts (default 5)" })),
 		}),
 		async execute(_id, params) {
 			const sessionsDir = join(stateDir, "sessions");
 			if (!existsSync(sessionsDir)) {
 				return { content: [{ type: "text" as const, text: "No session logs yet." }], details: undefined };
 			}
-			const q = params.query.toLowerCase();
-			const limit = params.limit ?? 5;
-			const hits: string[] = [];
-			// Layout: sessions/<chatId>/<uuid>.jsonl, one entry per line:
-			// {type:"message", message:{role, content}, timestamp, ...}
-			for (const chat of readdirSync(sessionsDir).sort().reverse()) {
-				const chatDir = join(sessionsDir, chat);
-				let logFiles: string[];
+			indexSessionLogs();
+			const match = ftsQuery(params.query);
+			const noHits = `No matches for "${params.query}".`;
+			if (!match) return { content: [{ type: "text" as const, text: noHits }], details: undefined };
+			const limit = Math.max(1, Math.min(params.limit ?? 5, 20));
+			const rows = openRecallDb()
+				.prepare(
+					`SELECT chat, ts, role, snippet(chunks, 4, '…', '…', '…', 16) AS snip
+					 FROM chunks WHERE chunks MATCH ? ORDER BY rank LIMIT ?`,
+				)
+				.all(match, limit) as { chat: string; ts: string; role: string; snip: string }[];
+			if (!rows.length) return { content: [{ type: "text" as const, text: noHits }], details: undefined };
+			const excerpts = rows.map((r) => `[${r.chat} | ${r.ts || "?"} | ${r.role}] ${r.snip}`);
+			// Summarize the hits with a one-shot turn (Hermes-style cross-session
+			// recall). Fail-soft: raw excerpts are the fallback. Only when a model
+			// is explicitly configured — no surprise remote calls on default
+			// resolution. Delivered as this tool's result — a tool message, never
+			// a system-prompt injection.
+			let summary = "";
+			if (config.model) {
 				try {
-					logFiles = readdirSync(chatDir).filter((f) => f.endsWith(".jsonl"));
+					const { runOneShot } = await import("./session.js");
+					summary = await runOneShot(
+						config,
+						"You summarize excerpts from past conversations. Answer only from the excerpts, citing the chat id and date for each fact. At most 5 sentences. If they don't answer the question, say so.",
+						`Query: ${params.query}\n\nExcerpts from past conversations:\n${excerpts.map((e, i) => `${i + 1}. ${e}`).join("\n")}`,
+						{ tools: [] },
+					);
 				} catch {
-					continue; // not a directory
+					// summarization is best-effort; the excerpts stand on their own
 				}
-				for (const file of logFiles) {
-					for (const line of readFileSync(join(chatDir, file), "utf8").split("\n")) {
-						if (!line.trim()) continue;
-						let entry: { type?: string; timestamp?: string; message?: { role?: string; content?: unknown } };
-						try {
-							entry = JSON.parse(line);
-						} catch {
-							continue;
-						}
-						if (entry.type !== "message") continue;
-						const text = (Array.isArray(entry.message?.content) ? entry.message.content : [])
-							.map((b) => (b && typeof b === "object" && (b as { type?: string; text?: string }).type === "text" ? (b as { text?: string }).text ?? "" : ""))
-							.join(" ");
-						const at = text.toLowerCase().indexOf(q);
-						if (at === -1) continue;
-						hits.push(
-							`[${chat} | ${entry.timestamp ?? "?"} | ${entry.message?.role}] …${text.slice(Math.max(0, at - 80), at + 200)}…`,
-						);
-						if (hits.length >= limit) break;
-					}
-					if (hits.length >= limit) break;
-				}
-				if (hits.length >= limit) break;
 			}
-			return {
-				content: [{ type: "text" as const, text: hits.length ? hits.join("\n\n") : `No matches for "${params.query}".` }],
-				details: undefined,
-			};
+			const text = [
+				summary && !summary.startsWith("Error:") ? `Summary:\n${summary}` : "",
+				`Excerpts:\n${excerpts.join("\n\n")}`,
+			]
+				.filter(Boolean)
+				.join("\n\n");
+			return { content: [{ type: "text" as const, text }], details: undefined };
 		},
 	});
 

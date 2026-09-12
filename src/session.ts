@@ -9,7 +9,7 @@ import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { setModel } from "./config.js";
 import type { Config } from "./config.js";
 import { webTools } from "./web.js";
-import { loadMemory, memoryTools, takePendingMemoryUpdate } from "./memory.js";
+import { loadMemory, memoryTools } from "./memory.js";
 import { bashGateTool } from "./security.js";
 
 const CHAT_SYSTEM_PROMPT = `You are Gaia (Green AI Assistant), an ecologically-minded AI agent designed to run on clean energy. You have tools (shell, files, web search/fetch, memory) and talk over Telegram.
@@ -85,7 +85,7 @@ export class ChatSessions {
 			modelRuntime: runtime,
 			model,
 			thinkingLevel: "off",
-			customTools: [...webTools(), ...memoryTools(), bashGateTool(this.config)],
+			customTools: [...webTools(), ...memoryTools(this.config), bashGateTool(this.config)],
 			// no excludeTools: our custom "bash" shadows the built-in by name
 			resourceLoader: loader,
 			sessionManager: SessionManager.create(process.cwd(), `${process.env.HOME}/.pi-gateway/sessions/${chatId}`),
