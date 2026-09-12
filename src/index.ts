@@ -10,7 +10,7 @@ const proxyUrl = process.env.HTTPS_PROXY ?? process.env.https_proxy;
 if (proxyUrl) console.log(`using proxy ${proxyUrl}`);
 import { deleteMessage, getVoice, pollMessages, sendMessage, sendTyping, sendVoice } from "./telegram.js";
 import { ChatSessions, runOneShot, turnOutcome, type TurnOutcome } from "./session.js";
-import { takePendingMemoryUpdate } from "./memory.js";
+import { takePendingMemoryUpdate, pendingMemoryStaged, approveStagedMemory, dropStagedMemory, loadMemory } from "./memory.js";
 import { webTools } from "./web.js";
 import { startScheduler } from "./schedules.js";
 import { synthesize, ttsAvailable } from "./tts.js";
@@ -189,6 +189,39 @@ for await (const { chatId, text: rawText, voiceFileId } of pollMessages(config.t
 				} else {
 					addAllowedCommand(config, pattern);
 					await sendMessage(config.telegramBotToken, chatId, `Allowed: ${pattern}`);
+				}
+				continue;
+			}
+			if (prompt === "/memory") {
+				const staged = pendingMemoryStaged();
+				const snapshot = loadMemory();
+				await sendMessage(
+					config.telegramBotToken,
+					chatId,
+					`Memory:\n${snapshot || "(empty)"}\n\nPending approval:\n${staged.map((l) => `- ${l}`).join("\n") || "(none)"}\n\n/memory-approve saves pending entries; /memory-deny discards them.`,
+				);
+				continue;
+			}
+			if (prompt === "/memory-approve" || prompt === "/memory-deny") {
+				const approve = prompt === "/memory-approve";
+				const entries = approve ? approveStagedMemory() : dropStagedMemory();
+				if (entries.length === 0) {
+					await sendMessage(config.telegramBotToken, chatId, "Nothing pending.");
+					continue;
+				}
+				const summary = entries.map((l) => `- ${l}`).join("\n");
+				await sendMessage(config.telegramBotToken, chatId, `${approve ? "Saved to memory" : "Discarded"}:\n${summary}`);
+				// Let a live session know, so the model doesn't re-stage or misreport.
+				const live = chats.peek(chatId);
+				if (live) {
+					await live.sendCustomMessage(
+						{
+							customType: "memory",
+							content: approve ? `User approved memory entries:\n${summary}` : `User rejected memory entries:\n${summary}`,
+							display: false,
+						},
+						{ triggerTurn: false },
+					);
 				}
 				continue;
 			}
