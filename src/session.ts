@@ -85,7 +85,7 @@ export class ChatSessions {
 			modelRuntime: runtime,
 			model,
 			thinkingLevel: "off",
-			customTools: [...webTools(), ...memoryTools(), bashGateTool(this.config)],
+			customTools: [...webTools(), ...memoryTools(this.config), bashGateTool(this.config)],
 			// no excludeTools: our custom "bash" shadows the built-in by name
 			resourceLoader: loader,
 			sessionManager: SessionManager.create(process.cwd(), `${process.env.HOME}/.pi-gateway/sessions/${chatId}`),
