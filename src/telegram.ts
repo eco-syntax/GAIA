@@ -140,6 +140,18 @@ export async function sendVoice(token: string, chatId: number, wav: Buffer): Pro
 	});
 }
 
+/** Register the bot's slash-command menu (Telegram's popup list). Cosmetic; ignore failures. */
+export async function setMyCommands(
+	token: string,
+	commands: { command: string; description: string }[],
+): Promise<void> {
+	try {
+		await tg(token, "setMyCommands", { commands });
+	} catch (err) {
+		console.warn("setMyCommands failed:", err);
+	}
+}
+
 /** Show the typing indicator; Telegram expires it after ~5s, so call periodically. */
 export async function sendTyping(token: string, chatId: number): Promise<void> {
 	try {
