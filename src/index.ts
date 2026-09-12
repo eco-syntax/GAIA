@@ -14,10 +14,12 @@ import { ChatSessions, runOneShot, turnOutcome, type TurnOutcome } from "./sessi
 import { takePendingMemoryUpdate } from "./memory.js";
 import { webTools } from "./web.js";
 import { startScheduler } from "./schedules.js";
+import { initScheduleStore } from "./scheduleStore.js";
 import { synthesize, ttsAvailable } from "./tts.js";
 import { transcribe, sttAvailable } from "./stt.js";
 
 const config = loadConfig();
+initScheduleStore(config.schedules);
 const chats = new ChatSessions(config);
 const tools = webTools();
 const useTts = config.piperVoice ? ttsAvailable(config.piperVoice) : false;
@@ -91,7 +93,7 @@ function startTypingIndicator(token: string, chatId: number): () => void {
 	return () => clearInterval(timer);
 }
 
-const TOOL_ICONS: Record<string, string> = { websearch: "🔍", fetchpage: "🌐", bash: "⚙️", read: "📄" };
+const TOOL_ICONS: Record<string, string> = { websearch: "🔍", fetchpage: "🌐", bash: "⚙️", read: "📄", schedule: "🔁" };
 
 /** Send a small status message when a tool starts; delete it when it ends. */
 function watchToolActivity(
@@ -132,7 +134,20 @@ function shutdown() {
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
 
-startScheduler(config, (chatId, text) => deliver(chatId, text));
+startScheduler(
+	config,
+	(chatId, text) => deliver(chatId, text),
+	// Hermes-style cronjobs post in isolation and leave the agent with no memory of
+	// them. Append each result to the chat's session log (same pattern as memory) so
+	// follow-up questions are grounded in what the task actually found.
+	async (chatId, content) => {
+		const session = await chats.get(chatId);
+		await session.sendCustomMessage(
+			{ customType: "scheduled_task", content, display: false },
+			{ triggerTurn: false },
+		);
+	},
+);
 // Surface the chat commands in Telegram's popup slash-command list.
 void setMyCommands(config.telegramBotToken, [
 	{ command: "new", description: "Start a fresh session" },

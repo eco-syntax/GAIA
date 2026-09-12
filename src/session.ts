@@ -11,6 +11,7 @@ import type { Config } from "./config.js";
 import { webTools } from "./web.js";
 import { loadMemory, memoryTools } from "./memory.js";
 import { bashGateTool } from "./security.js";
+import { scheduleTool } from "./schedules.js";
 
 const CHAT_SYSTEM_PROMPT = `You are Gaia (Green AI Assistant), an ecologically-minded AI agent designed to run on clean energy. You have tools (shell, files, web search/fetch, memory) and talk over Telegram.
 
@@ -57,6 +58,10 @@ function resolveConfiguredModel(
 /** One pi session per chat, held in memory. Sessions persist to disk via SessionManager. */
 export class ChatSessions {
 	private sessions = new Map<number, AgentSession>();
+	/** In-flight get() promises: the scheduler can call get() concurrently with the
+	 * poll loop; without this, two creations for the same chat would race and the
+	 * loser would write interleaved history to the same log. */
+	private pending = new Map<number, Promise<AgentSession>>();
 	private modelRuntime: ModelRuntime | undefined;
 	private warnings = new Map<number, string>();
 	constructor(private config: Config) {}
@@ -71,6 +76,14 @@ export class ChatSessions {
 	async get(chatId: number): Promise<AgentSession> {
 		const existing = this.sessions.get(chatId);
 		if (existing) return existing;
+		const inFlight = this.pending.get(chatId);
+		if (inFlight) return inFlight;
+		const p = this.create(chatId).finally(() => this.pending.delete(chatId));
+		this.pending.set(chatId, p);
+		return p;
+	}
+
+	private async create(chatId: number): Promise<AgentSession> {
 		const runtime = await this.runtime();
 		const loader = new DefaultResourceLoader({
 			cwd: process.cwd(),
@@ -85,7 +98,7 @@ export class ChatSessions {
 			modelRuntime: runtime,
 			model,
 			thinkingLevel: "off",
-			customTools: [...webTools(), ...memoryTools(this.config), bashGateTool(this.config)],
+			customTools: [...webTools(), ...memoryTools(this.config), bashGateTool(this.config), scheduleTool(chatId)],
 			// no excludeTools: our custom "bash" shadows the built-in by name
 			resourceLoader: loader,
 			sessionManager: SessionManager.create(process.cwd(), `${process.env.HOME}/.pi-gateway/sessions/${chatId}`),
@@ -106,6 +119,7 @@ export class ChatSessions {
 	/** Drop the in-memory session so the next get() starts fresh. Log stays on disk. */
 	reset(chatId: number): void {
 		this.sessions.delete(chatId);
+		this.pending.delete(chatId);
 	}
 
 	/** Pop the pending model-fallback warning for a chat, if any. */

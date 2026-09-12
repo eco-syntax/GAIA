@@ -2,7 +2,9 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-const STATE_DIR = join(homedir(), ".pi-gateway");
+// PI_GATEWAY_STATE lets tests point the registry/state at a temp dir instead of
+// the live ~/.pi-gateway — never run a store test without it.
+const STATE_DIR = process.env.PI_GATEWAY_STATE ?? join(homedir(), ".pi-gateway");
 
 export interface Schedule {
 	name: string;
@@ -12,6 +14,8 @@ export interface Schedule {
 	/** Telegram chat id that receives the result. */
 	chatId: number;
 	prompt: string;
+	/** Inject the result into the chat's session log so follow-up questions are grounded (default true). */
+	inject?: boolean;
 }
 
 export interface Config {
