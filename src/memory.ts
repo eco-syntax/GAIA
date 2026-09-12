@@ -173,7 +173,7 @@ export function memoryTools(config: Config): ToolDefinition[] {
 		description:
 			"Search past conversation logs (all chats, all time). Use when you need something discussed before that isn't in your current context or MEMORY.md. Returns an LLM summary of what past conversations said about the query, plus the matching excerpts with chat and date.",
 		parameters: Type.Object({
-			query: Type.String({ description: "Search terms; all must appear. Quotes for exact phrases, OR between terms for broader recall." }),
+			query: Type.String({ description: "Search terms; every term must appear (AND). Use several specific keywords, not sentences." }),
 			limit: Type.Optional(Type.Number({ description: "Max excerpts (default 5)" })),
 		}),
 		async execute(_id, params) {
