@@ -18,7 +18,7 @@ import { transcribe, sttAvailable } from "./stt.js";
 
 const config = loadConfig();
 const chats = new ChatSessions(config);
-const tools = webTools();
+const tools = webTools;
 const useTts = config.piperVoice ? ttsAvailable(config.piperVoice) : false;
 if (config.piperVoice && !useTts) console.warn("piper not found or voice model missing; voice replies disabled");
 const useStt = config.whisperModel ? sttAvailable(config.whisperModel) : false;

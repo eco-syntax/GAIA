@@ -67,7 +67,8 @@ async function webSearch(query: string): Promise<SearchResult[]> {
 	return results;
 }
 
-export function webTools(): ToolDefinition[] {
+// Created once at module level and shared by the gateway and every chat session.
+export const webTools: ToolDefinition[] = (() => {
 	const search: ToolDefinition = defineTool({
 		name: "websearch",
 		label: "Web search",
@@ -118,4 +119,4 @@ export function webTools(): ToolDefinition[] {
 	});
 
 	return [search, fetchpage];
-}
+})();
