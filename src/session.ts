@@ -172,7 +172,12 @@ export async function runOneShot(
 	config: Config,
 	systemPrompt: string,
 	prompt: string,
-	options?: { tools?: string[]; customTools?: ToolDefinition[] },
+	options?: {
+		tools?: string[];
+		customTools?: ToolDefinition[];
+		/** Called as soon as the session exists, so callers can abort the turn. */
+		onSession?: (session: AgentSession) => void;
+	},
 ): Promise<string> {
 	const modelRuntime = await ModelRuntime.create({ allowModelNetwork: true });
 	const { model, warning } = resolveConfiguredModel(modelRuntime, config.model);
@@ -184,6 +189,7 @@ export async function runOneShot(
 		customTools: [...(options?.customTools ?? []), bashGateTool(config)],
 		sessionManager: SessionManager.inMemory(),
 	});
+	options?.onSession?.(session);
 	try {
 		await session.prompt(systemPrompt ? `${systemPrompt}\n\n${prompt}` : prompt);
 		const outcome = turnOutcome(session, 0);

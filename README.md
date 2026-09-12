@@ -11,6 +11,8 @@ scheduled tasks, web research, and local voice — built entirely on pi's SDK, n
 - **Web research**: built-in `websearch` + `fetchpage` tools (DuckDuckGo, no API keys; full page text
   saved to `~/.pi-gateway/research/`, capped in context like Hermes's approach).
 - **`/plan <idea>`**: one-shot spec writer — numbered build plan with file paths and acceptance criteria.
+- **Chat commands**: `/new` (fresh session), `/model [provider/id]` (list or switch models),
+  `/stop` (interrupt a running turn), `/plan` — all registered in Telegram's slash-command menu.
 - **Voice**: replies as Telegram voice notes via local `piper` (+ ffmpeg for OGG/Opus). Incoming
   voice notes are transcribed locally via whisper.cpp (set `"whisperModel": "/path/to/ggml-model.bin"`
   in the config; needs a `whisper-cli`/`whisper` binary and ffmpeg on PATH).
