@@ -267,6 +267,10 @@ for await (const { chatId, text: rawText, voiceFileId } of pollMessages(config.t
 			}
 			if (!prompt) continue; // empty/silent voice note
 		}
+		// Interrupt-and-redirect: a new message aborts the running turn first
+		// (Hermes-style), so users never queue behind a runaway turn.
+		const active = activeTurns.get(chatId);
+		if (active) await active();
 		if (prompt === "/stop") {
 			const abort = activeTurns.get(chatId);
 			if (abort) {
