@@ -1,11 +1,14 @@
-// Runnable check for the FTS5 recall index: node --import tsx tests/recall-check.ts
-// (or npx tsx tests/recall-check.ts). Uses a temp HOME so it never touches real state.
-import { mkdirSync, writeFileSync, utimesSync } from "node:fs";
+// Runnable check for the FTS5 recall index: npx tsx tests/recall-check.ts.
+// Self-contained: points HOME at a temp dir BEFORE importing src, so it never
+// touches real state (stateDir is computed from homedir() at import time).
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { memoryTools } from "../src/memory.js";
-import type { Config } from "../src/config.js";
 
-const home = process.env.HOME!;
+const home = mkdtempSync(join(tmpdir(), "recall-check-"));
+process.env.HOME = home;
+const { memoryTools } = await import("../src/memory.js");
+import type { Config } from "../src/config.js";
 const sessions = join(home, ".pi-gateway", "sessions");
 const log = (role: string, text: string) =>
 	JSON.stringify({ type: "message", timestamp: "2026-09-11T12:00:00Z", message: { role, content: [{ type: "text", text }] } });
@@ -57,3 +60,4 @@ const gone = await run("greenhouse");
 console.assert(gone.startsWith("No matches"), "FAIL: deleted chat still indexed", gone);
 
 console.log("recall-check OK");
+rmSync(home, { recursive: true, force: true });
