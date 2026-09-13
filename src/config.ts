@@ -1,8 +1,10 @@
-import { mkdirSync, readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-const STATE_DIR = join(homedir(), ".pi-gateway");
+// PI_GATEWAY_STATE lets tests point the registry/state at a temp dir instead of
+// the live ~/.pi-gateway — never run a store test without it.
+const STATE_DIR = process.env.PI_GATEWAY_STATE ?? join(homedir(), ".pi-gateway");
 
 export interface Schedule {
 	name: string;
@@ -12,6 +14,8 @@ export interface Schedule {
 	/** Telegram chat id that receives the result. */
 	chatId: number;
 	prompt: string;
+	/** Inject the result into the chat's session log so follow-up questions are grounded (default true). */
+	inject?: boolean;
 }
 
 export interface Config {
@@ -24,6 +28,10 @@ export interface Config {
 		maxTokens?: number; };
 	/** Piper TTS voice; omit to disable voice replies. */
 	piperVoice?: string;
+	/** whisper.cpp ggml model for voice-note transcription; omit to ignore voice messages. */
+	whisperModel?: string;
+	/** Bash allowlist patterns ("git *", "npm test"); every shell segment must match one. Empty = bash fully denied. */
+	allowedCommands?: string[];
 	schedules: Schedule[];
 }
 
@@ -46,9 +54,30 @@ export function loadConfig(): Config {
 		allowedChatIds: raw.allowedChatIds ?? [],
 		model: raw.model,
 		piperVoice: raw.piperVoice,
+		whisperModel: raw.whisperModel,
+		allowedCommands: raw.allowedCommands ?? [],
 		schedules: raw.schedules ?? [],
 	};
 }
 
+/** Set the default model: update the in-memory config AND persist it. */
+export function setModel(config: Config, model: Config["model"]): void {
+	config.model = model;
+	const path = join(STATE_DIR, "config.json");
+	const raw = JSON.parse(readFileSync(path, "utf8")) as Partial<Config>;
+	raw.model = model;
+	writeFileSync(path, JSON.stringify(raw, null, 2) + "\n", { mode: 0o600 });
+}
+
 export const stateDir = STATE_DIR;
 export const researchDir = join(STATE_DIR, "research");
+
+/** Add a bash allowlist pattern: update the in-memory config AND persist it. */
+export function addAllowedCommand(config: Config, pattern: string): void {
+	config.allowedCommands = [...(config.allowedCommands ?? [])];
+	if (!config.allowedCommands.includes(pattern)) config.allowedCommands.push(pattern);
+	const path = join(STATE_DIR, "config.json");
+	const raw = JSON.parse(readFileSync(path, "utf8")) as Partial<Config>;
+	raw.allowedCommands = config.allowedCommands;
+	writeFileSync(path, JSON.stringify(raw, null, 2) + "\n", { mode: 0o600 });
+}
