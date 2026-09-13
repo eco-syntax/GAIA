@@ -19,6 +19,23 @@ Work: use tools for real actions and real facts. Run the thing, then report what
 Memory: save durable user facts and reusable techniques with the memory tool. Skip anything stale in a week — task logs, IDs, statuses. Use the recall tool to search past conversations when memory isn't enough.
 
 Frugality is part of your identity: prefer the smallest model, shortest prompt, fewest tool calls that get the job done — wasted compute is wasted energy.`;
+/** Resolve the configured model, letting config override the catalog's context/token guesses.
+ * Local servers don't report their real context; the override lets pi compact before the
+ * server silently truncates. */
+async function resolveModel(config: Config, modelRuntime?: ModelRuntime) {
+	const runtime = modelRuntime ?? (await ModelRuntime.create());
+	const spec = config.model;
+	let model = spec ? (runtime.getModel(spec.provider, spec.id) ?? undefined) : undefined;
+	if (model && spec && (spec.contextWindow !== undefined || spec.maxTokens !== undefined)) {
+		model = {
+			...model,
+			contextWindow: spec.contextWindow ?? model.contextWindow,
+			maxTokens: spec.maxTokens ?? model.maxTokens,
+		};
+	}
+	return { modelRuntime: runtime, model };
+}
+
 /** One pi session per chat, held in memory. Sessions persist to disk via SessionManager. */
 export class ChatSessions {
 	private sessions = new Map<number, AgentSession>();
@@ -28,7 +45,8 @@ export class ChatSessions {
 	async get(chatId: number): Promise<AgentSession> {
 		const existing = this.sessions.get(chatId);
 		if (existing) return existing;
-		if (!this.modelRuntime) this.modelRuntime = await ModelRuntime.create();
+		const { modelRuntime, model } = await resolveModel(this.config, this.modelRuntime);
+		this.modelRuntime = modelRuntime;
 		const loader = new DefaultResourceLoader({
 			cwd: process.cwd(),
 			agentDir: `${process.env.HOME}/.pi-gateway/agent`,
@@ -36,19 +54,8 @@ export class ChatSessions {
 			appendSystemPromptOverride: () => [],
 		});
 		await loader.reload();
-		const spec = this.config.model;
-		let model = spec ? (this.modelRuntime.getModel(spec.provider, spec.id) ?? undefined) : undefined;
-		// Local servers don't report their real context; let config override the
-		// catalog guess so pi compacts before the server silently truncates.
-		if (model && spec && (spec.contextWindow !== undefined || spec.maxTokens !== undefined)) {
-			model = {
-				...model,
-				contextWindow: spec.contextWindow ?? model.contextWindow,
-				maxTokens: spec.maxTokens ?? model.maxTokens,
-			};
-		}
 		const { session } = await createAgentSession({
-			modelRuntime: this.modelRuntime,
+			modelRuntime,
 			model,
 			thinkingLevel: "off",
 			customTools: [...webTools(), ...memoryTools()],
@@ -88,16 +95,7 @@ export async function runOneShot(
 	prompt: string,
 	options?: { tools?: string[]; customTools?: ToolDefinition[] },
 ): Promise<string> {
-	const modelRuntime = await ModelRuntime.create();
-	const spec = config.model;
-	let model = spec ? (modelRuntime.getModel(spec.provider, spec.id) ?? undefined) : undefined;
-	if (model && spec && (spec.contextWindow !== undefined || spec.maxTokens !== undefined)) {
-		model = {
-			...model,
-			contextWindow: spec.contextWindow ?? model.contextWindow,
-			maxTokens: spec.maxTokens ?? model.maxTokens,
-		};
-	}
+	const { modelRuntime, model } = await resolveModel(config);
 	const { session } = await createAgentSession({
 		modelRuntime,
 		model,
