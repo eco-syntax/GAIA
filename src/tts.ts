@@ -1,6 +1,6 @@
 import { execFile, spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, readdirSync, rmSync } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -16,8 +16,6 @@ const execFileAsync = promisify(execFile);
 export async function synthesize(text: string, voicePath: string): Promise<{ data: Buffer; mime: string }> {
 	const dir = mkdtempSync(join(tmpdir(), "pi-tts-"));
 	const wav = join(dir, "out.wav");
-	const txt = join(dir, "in.txt");
-	await writeFile(txt, text.slice(0, 4000));
 	try {
 		await new Promise<void>((resolve, reject) => {
 			const p = spawn("piper", ["--model", voicePath, "--output_file", wav]);

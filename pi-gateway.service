@@ -10,5 +10,14 @@ ExecStart=%h/GAIA/node_modules/.bin/tsx src/index.ts
 Restart=on-failure
 RestartSec=3
 
+# OS-level containment: even a successful prompt injection can't write
+# outside state/workspace, escalate, or touch system paths (docs/security-plan.md)
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.pi-gateway %h/GAIA
+PrivateTmp=yes
+RestrictSUIDSGID=yes
+
 [Install]
 WantedBy=default.target

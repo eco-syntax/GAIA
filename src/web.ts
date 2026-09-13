@@ -204,7 +204,7 @@ async function webSearch(query: string): Promise<SearchResult[]> {
 	return results;
 }
 
-export function webTools(): ToolDefinition[] {
+export function webTools(onAccess?: () => void): ToolDefinition[] {
 	const search: ToolDefinition = defineTool({
 		name: "websearch",
 		label: "Web search",
@@ -214,6 +214,7 @@ export function webTools(): ToolDefinition[] {
 			query: Type.String({ description: "Search query" }),
 		}),
 		async execute(_id, params) {
+			onAccess?.(); // taint the session: web results are untrusted
 			const results = await webSearch(params.query);
 			if (results.length === 0) return { content: [{ type: "text" as const, text: "No results." }], details: undefined };
 			const text = results
@@ -232,6 +233,7 @@ export function webTools(): ToolDefinition[] {
 			url: Type.String({ description: "Page URL" }),
 		}),
 		async execute(_id, params) {
+			onAccess?.(); // taint the session: web content is untrusted
 			let res: Response;
 			try {
 				res = await safeFetch(params.url);
