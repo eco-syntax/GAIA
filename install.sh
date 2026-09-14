@@ -303,7 +303,6 @@ else
 			echo "downloading ggml-base.en (~148 MB)"
 			curl -fL https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin \
 				-o "$HOME/.pi-gateway/whisper/ggml-base.en.bin"
-			WHISPER_MODEL=$HOME/.pi-gateway/whisper/ggml-base.en.bin
 		fi
 		WHISPER_MODEL=$HOME/.pi-gateway/whisper/ggml-base.en.bin
 

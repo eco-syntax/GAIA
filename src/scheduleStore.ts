@@ -10,9 +10,6 @@ import { stateDir, type Schedule } from "./config.js";
 
 const SCHEDULES_FILE = join(stateDir, "schedules.json");
 
-const EVERY_RE = /^(\d+)([mhd])$/;
-const AT_RE = /^(\d{1,2}):(\d{2})$/;
-
 let schedules: Schedule[] = [];
 
 /** Load the persisted registry into memory at boot. */
@@ -25,6 +22,24 @@ export function loadSchedules(): void {
 	}
 }
 
+/** Parse an interval like "30m", "2h", "1d" into milliseconds. NaN if invalid. */
+export function parseEvery(every: string): number {
+	const m = /^(\d+)([mhd])$/.exec(every);
+	if (!m) return NaN;
+	const n = Number(m[1]);
+	return n * (m[2] === "m" ? 60_000 : m[2] === "h" ? 3_600_000 : 86_400_000);
+}
+
+/** Parse a daily "HH:MM" time (24h). Returns {h, min} or null if invalid. */
+export function parseAt(at: string): { h: number; min: number } | null {
+	const m = /^(\d{1,2}):(\d{2})$/.exec(at);
+	if (!m) return null;
+	const h = Number(m[1]);
+	const min = Number(m[2]);
+	if (h > 23 || min > 59) return null;
+	return { h, min };
+}
+
 function persist(): void {
 	mkdirSync(stateDir, { recursive: true });
 	writeFileSync(SCHEDULES_FILE, JSON.stringify(schedules, null, 2) + "\n", { mode: 0o600 });
@@ -35,14 +50,6 @@ export function listSchedules(): Schedule[] {
 	return [...schedules];
 }
 
-function validTime(at: string): boolean {
-	const m = AT_RE.exec(at);
-	if (!m) return false;
-	const h = Number(m[1]);
-	const min = Number(m[2]);
-	return h >= 0 && h <= 23 && min >= 0 && min <= 59;
-}
-
 export type AddResult = { ok: true } | { ok: false; error: string };
 
 export function addSchedule(s: Schedule): AddResult {
@@ -50,9 +57,9 @@ export function addSchedule(s: Schedule): AddResult {
 	if (!s.prompt?.trim()) return { ok: false, error: "a prompt is required" };
 	if (s.every && s.at) return { ok: false, error: "use either every or at, not both" };
 	if (s.every) {
-		if (!EVERY_RE.test(s.every)) return { ok: false, error: `invalid interval "${s.every}" — use e.g. "30m", "2h", "1d"` };
+		if (Number.isNaN(parseEvery(s.every))) return { ok: false, error: `invalid interval "${s.every}" — use e.g. "30m", "2h", "1d"` };
 	} else if (s.at) {
-		if (!validTime(s.at)) return { ok: false, error: `invalid time "${s.at}" — use "HH:MM" (24h)` };
+		if (!parseAt(s.at)) return { ok: false, error: `invalid time "${s.at}" — use "HH:MM" (24h)` };
 	} else {
 		return { ok: false, error: "specify an interval (every) or a daily time (at)" };
 	}

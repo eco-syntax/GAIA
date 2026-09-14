@@ -14,18 +14,26 @@ const execFileAsync = promisify(execFile);
 // the command is split on &&, ||, ;, |, and newlines and EVERY segment must
 // match some "allowedCommands" pattern ("git *" = prefix, "npm test" = exact
 // or prefix-with-args).
-// ponytail: $(), backticks, and process substitution can still smuggle a
-// second command past segment splitting; a real shell parser or running the
-// gateway in a container/VM is the upgrade path (see docs/security-plan.md).
+// Fail-closed first: any shell metacharacter that can smuggle a second
+// command (command/process substitution, backticks, background `&`) or
+// redirect files (`<`, `>`) is rejected before pattern matching.
+// ponytail: still not a real shell parser; running the gateway in a
+// container/VM is the upgrade path (see docs/security-plan.md).
 // ============================================================================
 
 const OUTPUT_CHAR_LIMIT = 20_000;
 const DEFAULT_TIMEOUT_S = 120;
 const MAX_TIMEOUT_S = 600;
 
+// `$` covers $(...), ${...}, $[...]; backtick covers `...`; `<`/`>` cover
+// redirection and process substitution (<(...), >(...)); a lone `&` covers
+// `cmd & other` (but `&&` is a separator the segment split handles).
+const SHELL_METACHARACTERS = /[$`<>]|(?<!&)&(?!&)/;
+
 /** Every &&/||/;/|/newline-separated segment must match some pattern. */
 export function commandAllowed(command: string, patterns: string[]): boolean {
 	if (patterns.length === 0) return false;
+	if (SHELL_METACHARACTERS.test(command)) return false;
 	const segments = command
 		.split(/&&|\|\||[;|\n]/)
 		.map((s) => s.trim())
