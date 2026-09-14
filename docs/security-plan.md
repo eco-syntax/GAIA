@@ -1,7 +1,7 @@
 # Security plan: closing the bash free-for-all
 
 Written 2026-09-08. Status: **implemented** — `src/security.ts`, `/allow` in `src/index.ts`,
-hardening in `pi-gateway.service`; self-check: `npx tsx src/security-check.ts`.
+hardening in `pi-gateway.service`; self-check: `npx tsx tests/security-check.ts`.
 
 ## Threat model
 

@@ -1,5 +1,5 @@
 // Self-check for the bash gate and the memory untrusted-content gate.
-// Run: npx tsx src/security-check.ts
+// Run: npx tsx tests/security-check.ts
 import assert from "node:assert";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -10,7 +10,7 @@ import { join } from "node:path";
 const fakeHome = mkdtempSync(join(tmpdir(), "memgate-"));
 process.env.HOME = fakeHome;
 
-const { commandAllowed } = await import("./security.js");
+const { commandAllowed } = await import("../src/security.js");
 assert(commandAllowed("git status", ["git *"]));
 assert(commandAllowed("git commit -m hi", ["git *"]));
 assert(commandAllowed("npm test", ["npm test"]));
@@ -40,7 +40,7 @@ assert(!commandAllowed("git log --format=$(id)", ["git *"]));
 assert(!commandAllowed("echo a 2>&1", ["echo *"]));
 
 // end-to-end: the tool itself executes allowlisted commands and refuses others
-const { bashGateTool } = await import("./security.js");
+const { bashGateTool } = await import("../src/security.js");
 let bashTainted = false;
 const tool = bashGateTool(
 	{ allowedCommands: ["echo *"] } as never,
@@ -60,7 +60,7 @@ assert.ok(!bashTainted, "a refused command returns no untrusted output and must 
 console.log("security self-checks passed");
 
 // memory gate: web-tainted sessions stage saves instead of persisting them
-const { memoryTools, loadMemory, approveStagedMemory, dropStagedMemory, pendingMemoryStaged } = await import("./memory.js");
+const { memoryTools, loadMemory, approveStagedMemory, dropStagedMemory, pendingMemoryStaged } = await import("../src/memory.js");
 type Tool = { execute: (id: string, params: { action: string; content?: string }) => Promise<{ content: { text: string }[] }> };
 const tainted = memoryTools({} as never, () => true)[0] as unknown as Tool;
 const clean = memoryTools({} as never, () => false)[0] as unknown as Tool;

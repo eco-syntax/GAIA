@@ -7,7 +7,7 @@ import dns from "node:dns";
 import { isIP } from "node:net";
 import type { LookupFunction } from "node:net";
 import { join } from "node:path";
-import { researchDir } from "./config.js";
+import { stateDir } from "./config.js";
 
 // ============================================================================
 // Hermes-style web search + fetch: one tool, zero user configuration.
@@ -18,6 +18,8 @@ import { researchDir } from "./config.js";
 
 const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131 Safari/537.36";
 const FETCH_CHAR_LIMIT = 20_000;
+/** Where truncated fetchpage results are saved so the model can read the full text. */
+const researchDir = join(stateDir, "research");
 const MAX_REDIRECTS = 5;
 
 // ============================================================================
@@ -228,7 +230,7 @@ export function webTools(onAccess?: () => void): ToolDefinition[] {
 		name: "fetchpage",
 		label: "Fetch page",
 		description:
-			`Fetch a web page and return its readable text (first ${FETCH_CHAR_LIMIT} characters). Full text is saved to disk; the tool result is capped so the conversation stays small.`,
+			`Fetch a web page and return its readable text (first ${FETCH_CHAR_LIMIT} characters). Longer pages are saved to disk; the tool result is capped so the conversation stays small.`,
 		parameters: Type.Object({
 			url: Type.String({ description: "Page URL" }),
 		}),
@@ -243,20 +245,16 @@ export function webTools(onAccess?: () => void): ToolDefinition[] {
 			}
 			if (!res.ok) return { content: [{ type: "text" as const, text: `HTTP ${res.status} fetching ${params.url}` }], details: undefined };
 			const text = htmlToText(await res.text());
+			if (text.length <= FETCH_CHAR_LIMIT) {
+				return { content: [{ type: "text" as const, text }], details: undefined };
+			}
+			// Only persist pages that exceed the inline limit; short fetches never touch disk.
 			mkdirSync(researchDir, { recursive: true });
 			const slug = params.url.replace(/[^a-z0-9]+/gi, "-").slice(0, 80);
 			const path = join(researchDir, `${slug}.txt`);
 			writeFileSync(path, text);
 			return {
-				content: [
-					{
-						type: "text" as const,
-						text:
-							text.length > FETCH_CHAR_LIMIT
-								? `${text.slice(0, FETCH_CHAR_LIMIT)}\n\n[truncated; full text: ${path}]`
-								: text,
-					},
-				],
+				content: [{ type: "text" as const, text: `${text.slice(0, FETCH_CHAR_LIMIT)}\n\n[truncated; full text: ${path}]` }],
 				details: undefined,
 			};
 		},

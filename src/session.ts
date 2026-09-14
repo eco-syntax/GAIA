@@ -8,8 +8,10 @@ import {
 	type AgentSession,
 } from "@earendil-works/pi-coding-agent";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { setModel } from "./config.js";
+import { join } from "node:path";
+import { setModel, stateDir } from "./config.js";
 import type { Config } from "./config.js";
+import { stripReasoning } from "./format.js";
 import { webTools } from "./web.js";
 import { loadMemory, memoryTools } from "./memory.js";
 import { bashGateTool } from "./security.js";
@@ -116,7 +118,7 @@ export class ChatSessions {
 		const runtime = await this.runtime();
 		const loader = new DefaultResourceLoader({
 			cwd: process.cwd(),
-			agentDir: `${process.env.HOME}/.pi-gateway/agent`,
+			agentDir: join(stateDir, "agent"),
 			systemPromptOverride: () => CHAT_SYSTEM_PROMPT,
 			appendSystemPromptOverride: () => [],
 		});
@@ -147,7 +149,7 @@ export class ChatSessions {
 				scheduleTool(chatId),
 			],			// no excludeTools: our custom "read" and "bash" shadow the built-ins by name
 			resourceLoader: loader,
-			sessionManager: SessionManager.create(process.cwd(), `${process.env.HOME}/.pi-gateway/sessions/${chatId}`),
+			sessionManager: SessionManager.create(process.cwd(), join(stateDir, "sessions", String(chatId))),
 		});
 		// Memory is appended to the log as custom messages, never prepended to the
 		// system prompt — updates mid-chat reach the next turn without a restart.
@@ -224,7 +226,7 @@ export function turnOutcome(session: AgentSession, since: number): TurnOutcome {
 		if (stop === "aborted") return { error: "turn aborted" };
 		const text = (m as { content: { type: string; text?: string }[] }).content
 			.filter((b) => b.type === "text")
-			.map((b) => b.text ?? "")
+			.map((b) => stripReasoning(b.text ?? ""))
 			.join("\n")
 			.trim();
 		if (text) return { text };

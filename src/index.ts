@@ -8,7 +8,8 @@ import { EnvHttpProxyAgent, setGlobalDispatcher } from "undici";
 setGlobalDispatcher(new EnvHttpProxyAgent({ allowH2: false }));
 const proxyUrl = process.env.HTTPS_PROXY ?? process.env.https_proxy;
 if (proxyUrl) console.log(`using proxy ${proxyUrl}`);
-import { deleteMessage, getVoice, pollMessages, sendMessage, setMyCommands, sendTyping, sendVoice } from "./telegram.js";
+import { deepestCause, deleteMessage, errorCode, getVoice, pollMessages, sendMessage, setMyCommands, sendTyping, sendVoice } from "./telegram.js";
+import { toSpokenText } from "./format.js";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import { ChatSessions, runOneShot, turnOutcome, type TurnOutcome } from "./session.js";
 import { takePendingMemoryUpdate, pendingMemoryStaged, approveStagedMemory, dropStagedMemory, loadMemory } from "./memory.js";
@@ -28,15 +29,15 @@ const useStt = config.whisperModel ? sttAvailable(config.whisperModel) : false;
 if (config.whisperModel && !useStt) console.warn("whisper.cpp not found or model missing; voice messages ignored");
 
 /** Undici hides the real network reason in `err.cause`; surface it so the user
- * sees why the turn failed instead of a bare "TypeError: fetch failed". */
+ * sees why the turn failed instead of a bare "TypeError: fetch failed". The
+ * cause-chain walk lives in telegram.ts (deepestCause/errorCode) — no second
+ * copy here, and deepestCause sees past the one-level version's blind spot. */
 function describeError(err: unknown): string {
 	if (!(err instanceof Error)) return String(err);
-	const cause = (err as { cause?: unknown }).cause;
-	if (cause instanceof Error && cause.message) {
-		const code = (cause as { code?: string }).code;
-		return code ? `${cause.message} (${code})` : cause.message;
-	}
-	return err.message;
+	const deep = deepestCause(err);
+	const message = deep instanceof Error && deep.message ? deep.message : err.message;
+	const code = errorCode(err);
+	return code ? `${message} (${code})` : message;
 }
 
 /** Upstream provider died mid-request (stream stall, timeout). pi's SDK retry
@@ -74,7 +75,9 @@ async function deliverOutcome(chatId: number, outcome: TurnOutcome, voice: boole
 async function deliver(chatId: number, text: string, voice = false): Promise<void> {
 	if (voice && useTts && config.piperVoice) {
 		try {
-			const { data, mime } = await synthesize(text, config.piperVoice);
+			// Voice notes speak plain prose: no markdown syntax read aloud, no
+			// reasoning steps that a text reply would leave out.
+			const { data, mime } = await synthesize(toSpokenText(text), config.piperVoice);
 			if (mime === "audio/ogg") {
 				await sendVoice(config.telegramBotToken, chatId, data);
 				return;
@@ -97,7 +100,7 @@ const TOOL_ICONS: Record<string, string> = { websearch: "🔍", fetchpage: "🌐
 
 /** Send a small status message when a tool starts; delete it when it ends. */
 function watchToolActivity(
-	session: ReturnType<typeof Object>,
+	session: AgentSession,
 	token: string,
 	chatId: number,
 ): () => void {
