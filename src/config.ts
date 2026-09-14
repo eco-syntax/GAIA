@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -48,7 +48,6 @@ export function loadConfig(): Config {
 			`Set a non-empty allowedChatIds in ${path} — refusing to start without an allow-list.`,
 		);
 	}
-	mkdirSync(STATE_DIR, { recursive: true });
 	return {
 		telegramBotToken: raw.telegramBotToken,
 		allowedChatIds: raw.allowedChatIds ?? [],
@@ -60,24 +59,29 @@ export function loadConfig(): Config {
 	};
 }
 
-/** Set the default model: update the in-memory config AND persist it. */
-export function setModel(config: Config, model: Config["model"]): void {
-	config.model = model;
+/** Read the config file, let `mutate` apply its change, then write it back with 0600 perms. */
+function updateConfigFile(mutate: (raw: Config) => void): void {
 	const path = join(STATE_DIR, "config.json");
-	const raw = JSON.parse(readFileSync(path, "utf8")) as Partial<Config>;
-	raw.model = model;
+	const raw = JSON.parse(readFileSync(path, "utf8")) as Config;
+	mutate(raw);
 	writeFileSync(path, JSON.stringify(raw, null, 2) + "\n", { mode: 0o600 });
 }
 
 export const stateDir = STATE_DIR;
-export const researchDir = join(STATE_DIR, "research");
+
+/** Set the default model: update the in-memory config AND persist it. */
+export function setModel(config: Config, model: Config["model"]): void {
+	config.model = model;
+	updateConfigFile((raw) => {
+		raw.model = model;
+	});
+}
 
 /** Add a bash allowlist pattern: update the in-memory config AND persist it. */
 export function addAllowedCommand(config: Config, pattern: string): void {
 	config.allowedCommands = [...(config.allowedCommands ?? [])];
 	if (!config.allowedCommands.includes(pattern)) config.allowedCommands.push(pattern);
-	const path = join(STATE_DIR, "config.json");
-	const raw = JSON.parse(readFileSync(path, "utf8")) as Partial<Config>;
-	raw.allowedCommands = config.allowedCommands;
-	writeFileSync(path, JSON.stringify(raw, null, 2) + "\n", { mode: 0o600 });
+	updateConfigFile((raw) => {
+		raw.allowedCommands = config.allowedCommands;
+	});
 }
