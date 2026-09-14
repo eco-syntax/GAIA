@@ -9,6 +9,7 @@ import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
 import { setModel, stateDir, type Config } from "./config.js";
 import { chatKey, type ChatRef } from "./platform.js";
+import { stripReasoning } from "./format.js";
 import { webTools } from "./web.js";
 import { loadMemory, memoryTools, memoryFileForChat } from "./memory.js";
 import { bashGateTool } from "./security.js";
@@ -203,7 +204,7 @@ export function turnOutcome(session: AgentSession, since: number): TurnOutcome {
 		if (stop === "aborted") return { error: "turn aborted" };
 		const text = (m as { content: { type: string; text?: string }[] }).content
 			.filter((b) => b.type === "text")
-			.map((b) => b.text ?? "")
+			.map((b) => stripReasoning(b.text ?? ""))
 			.join("\n")
 			.trim();
 		if (text) return { text };

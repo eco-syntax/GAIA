@@ -19,6 +19,23 @@ interface TgMessage {
 	date?: number;
 }
 
+/** Deepest error in undici's nested err.cause chain — the outer
+ * "TypeError: fetch failed" says nothing, the real reason sits in the cause. */
+export function deepestCause(err: unknown): unknown {
+	let e = err;
+	for (let i = 0; e && i < 6; i++) {
+		const next = (e as { cause?: unknown }).cause;
+		if (next === undefined) return e;
+		e = next;
+	}
+	return e;
+}
+
+// errorCode (and the retry/sleep helpers) live in net.js, shared by every
+// chat-platform transport; re-export here so index.ts can keep importing it
+// from telegram.js alongside deepestCause.
+export { errorCode } from "./net.js";
+
 interface TgUpdate {
 	update_id: number;
 	message?: TgMessage;

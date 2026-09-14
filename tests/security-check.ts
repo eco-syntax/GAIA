@@ -1,5 +1,5 @@
 // Self-check for the bash gate and the memory untrusted-content gate.
-// Run: npx tsx src/security-check.ts
+// Run: npx tsx tests/security-check.ts
 import assert from "node:assert";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -10,7 +10,7 @@ import { join } from "node:path";
 const fakeHome = mkdtempSync(join(tmpdir(), "memgate-"));
 process.env.HOME = fakeHome;
 
-const { commandAllowed } = await import("./security.js");
+const { commandAllowed } = await import("../src/security.js");
 assert(commandAllowed("git status", ["git *"]));
 assert(commandAllowed("git commit -m hi", ["git *"]));
 assert(commandAllowed("npm test", ["npm test"]));
@@ -40,7 +40,7 @@ assert(!commandAllowed("git log --format=$(id)", ["git *"]));
 assert(!commandAllowed("echo a 2>&1", ["echo *"]));
 
 // end-to-end: the tool itself executes allowlisted commands and refuses others
-const { bashGateTool } = await import("./security.js");
+const { bashGateTool } = await import("../src/security.js");
 const tool = bashGateTool({ allowedCommands: ["echo *"] } as never);
 const run = (cmd: string) =>
 	(tool.execute as unknown as (id: string, params: { command: string }) => Promise<unknown>)("t1", { command: cmd });
@@ -51,8 +51,8 @@ assert.ok(no.content[0]!.text.includes("Refused"), "non-allowlisted command shou
 console.log("security self-checks passed");
 
 // memory gate: web-tainted sessions stage saves instead of persisting them
-const { memoryTools, loadMemory, approveStagedMemory, dropStagedMemory, pendingMemoryStaged } = await import("./memory.js");
-import type { ChatRef } from "./platform.js";
+const { memoryTools, loadMemory, approveStagedMemory, dropStagedMemory, pendingMemoryStaged } = await import("../src/memory.js");
+import type { ChatRef } from "../src/platform.js";
 type Tool = { execute: (id: string, params: { action: string; content?: string }) => Promise<{ content: { text: string }[] }> };
 const ref: ChatRef = { platform: "telegram", chatId: "111" };
 const tainted = memoryTools({} as never, () => true, ref)[0] as unknown as Tool;
