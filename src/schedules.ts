@@ -1,7 +1,7 @@
 import type { Schedule } from "./config.js";
 import { runOneShot } from "./session.js";
 import type { Config } from "./config.js";
-import { addSchedule, listSchedules, removeSchedule } from "./scheduleStore.js";
+import { addSchedule, listSchedules, parseAt, parseEvery, removeSchedule } from "./scheduleStore.js";
 import { Type } from "@sinclair/typebox";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 
@@ -75,18 +75,12 @@ export function scheduleTool(chatId: number): ToolDefinition {
  * gateway restart.
  */
 
-function parseEvery(every: string): number {
-	const m = /^(\d+)([mhd])$/.exec(every);
-	if (!m) throw new Error(`Invalid schedule interval: ${every} (use e.g. "30m", "2h", "1d")`);
-	const n = Number(m[1]);
-	return n * (m[2] === "m" ? 60_000 : m[2] === "h" ? 3_600_000 : 86_400_000);
-}
-
 /** Whether the daily `at: "HH:MM"` time fell in (prev, now] — catches ticks skipped by event-loop stalls or suspend/resume. */
 export function crossedDailyTime(prev: Date, now: Date, at: string): boolean {
-	const [h, min] = at.split(":").map(Number);
+	const t = parseAt(at);
+	if (!t) return false;
 	const atToday = new Date(now);
-	atToday.setHours(h!, min!, 0, 0);
+	atToday.setHours(t.h, t.min, 0, 0);
 	return atToday > prev && atToday <= now;
 }
 
@@ -134,6 +128,10 @@ export function startScheduler(
 				let due = false;
 				if (sched.every) {
 					const interval = parseEvery(sched.every);
+					if (Number.isNaN(interval)) {
+						console.error(`Schedule "${sched.name}" has invalid every "${sched.every}"; skipped`);
+						continue;
+					}
 					const last = nextRun.get(key) ?? now.getTime(); // first tick runs immediately
 					due = now.getTime() >= last;
 					if (due) nextRun.set(key, now.getTime() + interval);
