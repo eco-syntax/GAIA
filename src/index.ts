@@ -8,7 +8,7 @@ import { EnvHttpProxyAgent, setGlobalDispatcher } from "undici";
 setGlobalDispatcher(new EnvHttpProxyAgent({ allowH2: false }));
 const proxyUrl = process.env.HTTPS_PROXY ?? process.env.https_proxy;
 if (proxyUrl) console.log(`using proxy ${proxyUrl}`);
-import { deleteMessage, getVoice, pollMessages, sendMessage, setMyCommands, sendTyping, sendVoice } from "./telegram.js";
+import { deleteMessage, errorCode, getVoice, pollMessages, sendMessage, setMyCommands, sendTyping, sendVoice } from "./telegram.js";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import { ChatSessions, runOneShot, turnOutcome, type TurnOutcome } from "./session.js";
 import { takePendingMemoryUpdate } from "./memory.js";
@@ -29,12 +29,16 @@ if (config.whisperModel && !useStt) console.warn("whisper.cpp not found or model
  * sees why the turn failed instead of a bare "TypeError: fetch failed". */
 function describeError(err: unknown): string {
 	if (!(err instanceof Error)) return String(err);
-	const cause = (err as { cause?: unknown }).cause;
-	if (cause instanceof Error && cause.message) {
-		const code = (cause as { code?: string }).code;
-		return code ? `${cause.message} (${code})` : cause.message;
+	const code = errorCode(err);
+	// Walk the full cause chain for the deepest message (the one-level version
+	// missed deeper causes); the top-level "fetch failed" says nothing alone.
+	let e: unknown = err;
+	let message = err.message;
+	for (let i = 0; e && i < 6; i++) {
+		if (e instanceof Error && e.message) message = e.message;
+		e = (e as { cause?: unknown }).cause;
 	}
-	return err.message;
+	return code ? `${message} (${code})` : message;
 }
 
 /** Upstream provider died mid-request (stream stall, timeout). pi's SDK retry

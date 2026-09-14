@@ -28,7 +28,7 @@ const RETRYABLE_CODES = new Set([
 ]);
 
 /** Walk the error/cause chain for a transport error code (undici nests causes). */
-function errorCode(err: unknown): string | undefined {
+export function errorCode(err: unknown): string | undefined {
 	let e = err;
 	for (let i = 0; e && i < 6; i++) {
 		const code = (e as { code?: unknown }).code;
