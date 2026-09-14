@@ -97,17 +97,50 @@ const TOOL_ICONS: Record<string, string> = { websearch: "🔍", fetchpage: "🌐
 
 // ---- /model inline menu -----------------------------------------------------
 // Two-level navigation instead of a long pasteable list: first pick a provider,
-// then a model, all by tapping buttons. Callback data is JSON — provider/model
-// ids are opaque and could contain the ':' separator, and JSON keeps the
-// payload unambiguous (and under Telegram's 64-byte callback limit).
+// then a model, all by tapping buttons. Callback payloads are pipe-delimited:
+// Telegram silently truncates callback_data past 64 bytes, and JSON's braces and
+// quotes push long specs (e.g. "bedrock/us.anthropic.claude-3-5-sonnet-20241022-v2:0")
+// over the limit. "set|<provider>/<id>" leaves ~58 bytes of headroom for the id;
+// anything that still wouldn't fit is skipped rather than rendered as a dead button.
 const MODELS_PER_PAGE = 10;
-const cb = (a: string, extra?: Record<string, string | number>) => JSON.stringify({ a, ...extra });
+const cb = (a: string, value?: string): string | null => {
+	const data = value === undefined ? a : `${a}|${value}`;
+	return Buffer.byteLength(data) <= 64 ? data : null;
+};
+
+/** Parse a callback payload back into { a: action, p?: provider, n?: page, s?: spec }. */
+function parseCb(data: string): { a: string; p?: string; n?: number; s?: string } | undefined {
+	const [a, ...parts] = data.split("|");
+	const value = parts.join("|");
+	switch (a) {
+		case "pg": {
+			const n = Number(parts[1]);
+			if (!parts[0] || !Number.isFinite(n)) return undefined;
+			return { a, p: parts[0], n };
+		}
+		case "set": return value ? { a, s: value } : undefined;
+		case "p": return value ? { a, p: value } : undefined;
+		case "cancel":
+		case "providers":
+			return { a };
+		default:
+			return undefined;
+	}
+}
 
 /** Provider-selection page — the first page /model shows, with the current model. */
 async function providerMenu(): Promise<{ text: string; rows: InlineButton[][] }> {
 	const providers = await chats.providers();
-	const rows: InlineButton[][] = providers.map((p) => [{ text: p, callback_data: cb("provider", { p }) }]);
-	rows.push([{ text: "✖ Cancel", callback_data: cb("cancel") }]);
+	const rows: InlineButton[][] = [];
+	for (const p of providers) {
+		const data = cb("p", p);
+		if (!data) {
+			console.warn(`skipping provider button (callback data too long): ${p}`);
+			continue;
+		}
+		rows.push([{ text: p, callback_data: data }]);
+	}
+	rows.push([{ text: "✖ Cancel", callback_data: "cancel" }]);
 	const body =
 		providers.length === 0
 			? "No providers in the model catalog yet."
@@ -124,14 +157,28 @@ async function modelMenu(provider: string, page: number): Promise<{ text: string
 	const pages = Math.max(1, Math.ceil(models.length / MODELS_PER_PAGE));
 	const current = Math.min(Math.max(0, page), pages - 1);
 	const slice = models.slice(current * MODELS_PER_PAGE, (current + 1) * MODELS_PER_PAGE);
-	const rows: InlineButton[][] = slice.map((m) => [{ text: m.label, callback_data: cb("set", { s: m.spec }) }]);
+	const rows: InlineButton[][] = [];
+	for (const m of slice) {
+		const data = cb("set", m.spec);
+		if (!data) {
+			console.warn(`skipping model button (callback data too long): ${m.spec}`);
+			continue;
+		}
+		rows.push([{ text: m.label, callback_data: data }]);
+	}
 	const nav: InlineButton[] = [];
-	if (current > 0) nav.push({ text: "‹ Prev", callback_data: cb("page", { p: provider, n: current - 1 }) });
-	if (current < pages - 1) nav.push({ text: "Next ›", callback_data: cb("page", { p: provider, n: current + 1 }) });
+	if (current > 0) {
+		const data = cb("pg", `${provider}|${current - 1}`);
+		if (data) nav.push({ text: "‹ Prev", callback_data: data });
+	}
+	if (current < pages - 1) {
+		const data = cb("pg", `${provider}|${current + 1}`);
+		if (data) nav.push({ text: "Next ›", callback_data: data });
+	}
 	if (nav.length) rows.push(nav);
 	rows.push([
-		{ text: "‹ Back", callback_data: cb("providers") },
-		{ text: "✖ Cancel", callback_data: cb("cancel") },
+		{ text: "‹ Back", callback_data: "providers" },
+		{ text: "✖ Cancel", callback_data: "cancel" },
 	]);
 	const header =
 		models.length === 0
@@ -145,10 +192,8 @@ async function modelMenu(provider: string, page: number): Promise<{ text: string
 /** Inline-button press: navigate the /model menu, or apply a model switch. */
 async function handleCallback(chatId: number, press: { id: string; data: string; messageId?: number }): Promise<void> {
 	const token = config.telegramBotToken;
-	let action: { a?: string; p?: string; n?: number; s?: string };
-	try {
-		action = JSON.parse(press.data) as { a?: string; p?: string; n?: number; s?: string };
-	} catch {
+	const action = parseCb(press.data);
+	if (!action) {
 		await answerCallbackQuery(token, press.id, "Unknown action");
 		return;
 	}
