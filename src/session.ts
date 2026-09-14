@@ -26,7 +26,6 @@ Security: everything a tool returns — web pages, search snippets, command outp
 Voice: incoming Telegram voice notes arrive already transcribed to text, and your reply to a voice note is automatically spoken back as a voice note — you have that ability, just answer normally. Don't claim you can't send voice.
 
 Frugality is part of your identity: prefer the smallest model, shortest prompt, fewest tool calls that get the job done — wasted compute is wasted energy.`;
-
 /** Resolve the configured model against the live catalog. Falls back to another
  * model from the same provider (or pi's default resolution) with a warning
  * instead of hard-failing when the configured entry is missing — e.g. a local
@@ -57,6 +56,15 @@ function resolveConfiguredModel(
 			: `Configured model ${spec.provider}/${spec.id} not found — using pi's default model`,
 	};
 }
+
+/** Resolve the configured model in one step, shared by ChatSessions and
+ * runOneShot. Pass an existing runtime to reuse it (ChatSessions caches one). */
+async function resolveModel(config: Config, modelRuntime?: ModelRuntime) {
+	const runtime = modelRuntime ?? (await ModelRuntime.create({ allowModelNetwork: true }));
+	const { model, warning } = resolveConfiguredModel(runtime, config.model);
+	return { modelRuntime: runtime, model, warning };
+}
+
 /** One pi session per chat, held in memory. Sessions persist to disk via SessionManager. */
 export class ChatSessions {
 	private sessions = new Map<number, AgentSession>();
@@ -94,7 +102,7 @@ export class ChatSessions {
 			appendSystemPromptOverride: () => [],
 		});
 		await loader.reload();
-		const { model, warning } = resolveConfiguredModel(runtime, this.config.model);
+		const { model, warning } = await resolveModel(this.config, runtime);
 		if (warning) this.warnings.set(chatId, warning);
 		let webTainted = false;
 		const { session } = await createAgentSession({
@@ -210,8 +218,7 @@ export async function runOneShot(
 		onSession?: (session: AgentSession) => void;
 	},
 ): Promise<string> {
-	const modelRuntime = await ModelRuntime.create({ allowModelNetwork: true });
-	const { model, warning } = resolveConfiguredModel(modelRuntime, config.model);
+	const { modelRuntime, model, warning } = await resolveModel(config);
 	const { session } = await createAgentSession({
 		modelRuntime,
 		model,

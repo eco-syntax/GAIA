@@ -186,6 +186,10 @@ export async function* pollMessages(
 	allowedChatIds: number[],
 	signal: AbortSignal,
 ): AsyncGenerator<{ chatId: number; text?: string; voiceFileId?: string }> {
+	// Fail closed: an empty allow-list must never be treated as "allow all".
+	if (allowedChatIds.length === 0) {
+		throw new Error("allowedChatIds is empty; refusing to poll Telegram");
+	}
 	let offset = 0;
 	// Ignore updates older than startup: Telegram redelivers unconfirmed
 	// updates after a restart, which would re-run old turns after a crash.
@@ -216,7 +220,7 @@ export async function* pollMessages(
 				offset = Math.max(offset, updateId + 1);
 				const msg = u.message;
 				if (!msg?.text && !msg?.voice) continue;
-				if (allowedChatIds.length > 0 && !allowedChatIds.includes(msg.chat.id)) continue;
+				if (!allowedChatIds.includes(msg.chat.id)) continue;
 				const date = (msg as { date?: number }).date;
 				if (date !== undefined && date < startedAt) continue;
 				const fp = `${msg.chat.id}:${date}:${msg.text ?? `voice:${msg.voice!.file_id.slice(0, 20)}`}`;
