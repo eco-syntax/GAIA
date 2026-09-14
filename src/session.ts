@@ -52,18 +52,24 @@ function resolveConfiguredModel(
 			: `Configured model ${spec.provider}/${spec.id} not found — using pi's default model`,
 	};
 }
+let sharedRuntime: ModelRuntime | undefined;
+/** Lazily create and reuse one runtime so the model-catalog network fetch and
+ * model resolution happen once per process, not per invocation. */
+async function getModelRuntime(): Promise<ModelRuntime> {
+	// Without allowModelNetwork the catalog refresh skips fetchModels entirely,
+	// local catalogs stay empty, and the session falls back to provider "unknown".
+	if (!sharedRuntime) sharedRuntime = await ModelRuntime.create({ allowModelNetwork: true });
+	return sharedRuntime;
+}
+
 /** One pi session per chat, held in memory. Sessions persist to disk via SessionManager. */
 export class ChatSessions {
 	private sessions = new Map<number, AgentSession>();
-	private modelRuntime: ModelRuntime | undefined;
 	private warnings = new Map<number, string>();
 	constructor(private config: Config) {}
 
 	private async runtime(): Promise<ModelRuntime> {
-		// Without allowModelNetwork the catalog refresh skips fetchModels entirely,
-		// local catalogs stay empty, and the session falls back to provider "unknown".
-		if (!this.modelRuntime) this.modelRuntime = await ModelRuntime.create({ allowModelNetwork: true });
-		return this.modelRuntime;
+		return getModelRuntime();
 	}
 
 	async get(chatId: number): Promise<AgentSession> {
@@ -157,7 +163,7 @@ export async function runOneShot(
 	prompt: string,
 	options?: { tools?: string[]; customTools?: ToolDefinition[] },
 ): Promise<string> {
-	const modelRuntime = await ModelRuntime.create({ allowModelNetwork: true });
+	const modelRuntime = await getModelRuntime();
 	const { model, warning } = resolveConfiguredModel(modelRuntime, config.model);
 	const { session } = await createAgentSession({
 		modelRuntime,
