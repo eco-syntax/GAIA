@@ -6,11 +6,11 @@ scheduled tasks, web research, and local voice — built entirely on pi's SDK, n
 ## What it does
 
 - **Telegram chat**: each chat gets its own persistent pi session (full agent: files, bash, skills).
-- **Scheduled tasks**: `schedules` in config are just `{name, every|at, chatId, prompt}` — the
-  gateway runs a headless pi turn on a timer and delivers the result to the chat. No job types, no DSL.
+- **Scheduled tasks**: schedules are just `{name, every|at, chatId, prompt}` records in
+  `~/.pi-gateway/schedules.json` — the gateway runs a headless pi turn on a timer and delivers the
+  result to the chat. No job types, no DSL.
   A `schedule` tool is exposed to the agent too, so GAIA can set/list/remove recurring tasks itself at
-  runtime (interval `30m`/`2h`/`1d` or daily `HH:MM`); the live registry lives in
-  `~/.pi-gateway/schedules.json` and needs no restart. Each result is also appended into the target
+  runtime (interval `30m`/`2h`/`1d` or daily `HH:MM`); the live registry needs no restart. Each result is also appended into the target
   chat's session log (set `"inject": false` on a schedule to opt out), so follow-ups like "what did
   the scan say about X?" are grounded in what the task actually found rather than posted in isolation.
 - **Web research**: built-in `websearch` + `fetchpage` tools (DuckDuckGo, no API keys; full page text
@@ -44,12 +44,14 @@ cat > ~/.pi-gateway/config.json <<'EOF'
   "telegramBotToken": "123:ABC",
   "allowedChatIds": [123456789],
   "model": { "provider": "lmstudio", "id": "qwen3-32b" },
-  "piperVoice": "/opt/piper/voices/en_US-lessac-medium.onnx",
-  "schedules": [
-    { "name": "morning-brief", "at": "08:00", "chatId": 123456789,
-      "prompt": "Check my open PRs with gh and summarize anything needing attention." }
-  ]
+  "piperVoice": "/opt/piper/voices/en_US-lessac-medium.onnx"
 }
+EOF
+cat > ~/.pi-gateway/schedules.json <<'EOF'
+[
+  { "name": "morning-brief", "at": "08:00", "chatId": 123456789,
+    "prompt": "Check my open PRs with gh and summarize anything needing attention." }
+]
 EOF
 npm start
 ```

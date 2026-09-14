@@ -32,7 +32,6 @@ export interface Config {
 	whisperModel?: string;
 	/** Bash allowlist patterns ("git *", "npm test"); every shell segment must match one. Empty = bash fully denied. */
 	allowedCommands?: string[];
-	schedules: Schedule[];
 }
 
 export function loadConfig(): Config {
@@ -47,7 +46,6 @@ export function loadConfig(): Config {
 		piperVoice: raw.piperVoice,
 		whisperModel: raw.whisperModel,
 		allowedCommands: raw.allowedCommands ?? [],
-		schedules: raw.schedules ?? [],
 	};
 }
 

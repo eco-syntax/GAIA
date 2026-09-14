@@ -5,8 +5,7 @@ import { stateDir, type Schedule } from "./config.js";
 // ============================================================================
 // Live schedule registry. Schedules live in ~/.pi-gateway/schedules.json and are
 // read fresh by the scheduler every tick, so the agent can add/remove them at
-// runtime without a gateway restart. Seeded from config.schedules at boot so
-// existing config-driven schedules keep working.
+// runtime without a gateway restart.
 // ============================================================================
 
 const SCHEDULES_FILE = join(stateDir, "schedules.json");
@@ -16,22 +15,14 @@ const AT_RE = /^(\d{1,2}):(\d{2})$/;
 
 let schedules: Schedule[] = [];
 
-/** Seed the registry from config.schedules (only names not already persisted). */
-export function initScheduleStore(seed: Schedule[]): void {
+/** Load the persisted registry into memory at boot. */
+export function loadSchedules(): void {
 	try {
 		const raw = JSON.parse(readFileSync(SCHEDULES_FILE, "utf8")) as Schedule[];
 		schedules = Array.isArray(raw) ? raw : [];
 	} catch {
 		schedules = [];
 	}
-	const names = new Set(schedules.map((s) => s.name));
-	for (const s of seed) {
-		if (s && s.name && !names.has(s.name)) {
-			schedules.push(s);
-			names.add(s.name);
-		}
-	}
-	persist();
 }
 
 function persist(): void {

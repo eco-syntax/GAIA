@@ -14,12 +14,12 @@ import { ChatSessions, runOneShot, turnOutcome, type TurnOutcome } from "./sessi
 import { takePendingMemoryUpdate, pendingMemoryStaged, approveStagedMemory, dropStagedMemory, loadMemory } from "./memory.js";
 import { webTools } from "./web.js";
 import { startScheduler } from "./schedules.js";
-import { initScheduleStore } from "./scheduleStore.js";
+import { loadSchedules, listSchedules } from "./scheduleStore.js";
 import { synthesize, ttsAvailable } from "./tts.js";
 import { transcribe, sttAvailable } from "./stt.js";
 
 const config = loadConfig();
-initScheduleStore(config.schedules);
+loadSchedules();
 const chats = new ChatSessions(config);
 const tools = webTools();
 const useTts = config.piperVoice ? ttsAvailable(config.piperVoice) : false;
@@ -155,7 +155,7 @@ void setMyCommands(config.telegramBotToken, [
 	{ command: "stop", description: "Interrupt the current turn" },
 	{ command: "model", description: "Show or switch the model (/model [provider/id])" },
 ]);
-console.log(`pi-gateway running (state: ${stateDir}), ${config.schedules.length} schedules`);
+console.log(`pi-gateway running (state: ${stateDir}), ${listSchedules().length} schedules`);
 
 // Turns on one chat must not interleave (shared session history), so each chat
 // has a serial queue. Commands that must land mid-turn (/stop) bypass it — the
