@@ -8,6 +8,7 @@ const proxyUrl = process.env.HTTPS_PROXY ?? process.env.https_proxy;
 if (proxyUrl) console.log(`using proxy ${proxyUrl}`);
 import { deleteMessage, pollMessages, sendMessage, sendTyping, sendVoice } from "./telegram.js";
 import { ChatSessions, lastAssistantText, runOneShot } from "./session.js";
+import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import { webTools } from "./web.js";
 import { startScheduler } from "./schedules.js";
 import { synthesize, ttsAvailable } from "./tts.js";
@@ -44,7 +45,7 @@ const TOOL_ICONS: Record<string, string> = { websearch: "🔍", fetchpage: "🌐
 
 /** Send a small status message when a tool starts; delete it when it ends. */
 function watchToolActivity(
-	session: ReturnType<typeof Object>,
+	session: AgentSession,
 	token: string,
 	chatId: number,
 ): () => void {
