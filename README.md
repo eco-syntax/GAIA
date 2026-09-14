@@ -8,9 +8,18 @@ scheduled tasks, web research, and local voice — built entirely on pi's SDK, n
 - **Telegram chat**: each chat gets its own persistent pi session (full agent: files, bash, skills).
 - **Scheduled tasks**: `schedules` in config are just `{name, every|at, chatId, prompt}` — the
   gateway runs a headless pi turn on a timer and delivers the result to the chat. No job types, no DSL.
+  A `schedule` tool is exposed to the agent too, so GAIA can set/list/remove recurring tasks itself at
+  runtime (interval `30m`/`2h`/`1d` or daily `HH:MM`); the live registry lives in
+  `~/.pi-gateway/schedules.json` and needs no restart. Each result is also appended into the target
+  chat's session log (set `"inject": false` on a schedule to opt out), so follow-ups like "what did
+  the scan say about X?" are grounded in what the task actually found rather than posted in isolation.
 - **Web research**: built-in `websearch` + `fetchpage` tools (DuckDuckGo, no API keys; full page text
   saved to `~/.pi-gateway/research/`, capped in context like Hermes's approach).
+- **Memory & recall**: durable user facts live in a capped `MEMORY.md`, injected as session messages (never into the system prompt). The `recall` tool is full-text search (SQLite FTS5, incrementally indexed) over all persisted session logs, with a one-shot LLM summary of the hits — Hermes-style cross-session recall, also delivered as a tool result.
 - **`/plan <idea>`**: one-shot spec writer — numbered build plan with file paths and acceptance criteria.
+- **Chat commands**: `/new` (fresh session), `/model [provider/id]` (list or switch models),
+  `/stop` (interrupt a running turn), `/plan` — all registered in Telegram's slash-command menu.
+  Sending any new message also interrupts a running turn (Hermes-style interrupt-and-redirect).
 - **Voice**: replies as Telegram voice notes via local `piper` (+ ffmpeg for OGG/Opus). Incoming
   voice notes are transcribed locally via whisper.cpp (set `"whisperModel": "/path/to/ggml-model.bin"`
   in the config; needs a `whisper-cli`/`whisper` binary and ffmpeg on PATH).
