@@ -93,6 +93,20 @@ interface TgUpdate {
 		voice?: { file_id: string };
 		chat_type?: string;
 	};
+	callback_query?: {
+		id: string;
+		from: { id: number };
+		message?: { chat: { id: number }; message_id: number };
+		data?: string;
+	};
+}
+
+/** One polled update as seen by the gateway: a message or an inline-button press. */
+export interface PolledUpdate {
+	chatId: number;
+	text?: string;
+	voiceFileId?: string;
+	callback?: { id: string; data: string; messageId?: number };
 }
 
 async function tg(token: string, method: string, body: unknown, signal?: AbortSignal): Promise<unknown> {
@@ -123,21 +137,70 @@ async function tg(token: string, method: string, body: unknown, signal?: AbortSi
 	}, signal);
 }
 
-export async function sendMessage(token: string, chatId: number, text: string): Promise<number> {
+export interface InlineButton {
+	text: string;
+	callback_data?: string;
+	url?: string;
+}
+
+/** Telegram inline-keyboard reply markup. */
+export type InlineKeyboard = { inline_keyboard: InlineButton[][] };
+
+export async function sendMessage(
+	token: string,
+	chatId: number,
+	text: string,
+	replyMarkup?: InlineKeyboard,
+): Promise<number> {
 	// Telegram caps messages at 4096 chars. Chunk the RAW markdown first, then
 	// convert each chunk: splitting HTML can cut mid-tag and Telegram 400s it.
 	let lastId = 0;
-	for (let i = 0; i < text.length; i += 3800) {
-		const html = toTelegramHtml(text.slice(i, i + 3800));
+	const chunks: string[] = [];
+	for (let i = 0; i < text.length; i += 3800) chunks.push(text.slice(i, i + 3800));
+	for (let i = 0; i < chunks.length; i++) {
+		const html = toTelegramHtml(chunks[i]!);
 		const result = (await tg(token, "sendMessage", {
 			chat_id: chatId,
 			text: html,
 			parse_mode: "HTML",
 			link_preview_options: { is_disabled: true },
+			// Attach the keyboard to the last chunk, where the options live.
+			...(replyMarkup && i === chunks.length - 1 ? { reply_markup: replyMarkup } : {}),
 		})) as { message_id: number };
 		lastId = result.message_id;
 	}
 	return lastId;
+}
+
+/** Replace an inline-keyboard message's text/buttons (menu navigation). Pass
+ * `{ inline_keyboard: [] }` as replyMarkup to strip the buttons. */
+export async function editMessageText(
+	token: string,
+	chatId: number,
+	messageId: number,
+	text: string,
+	replyMarkup?: InlineKeyboard,
+): Promise<void> {
+	await tg(token, "editMessageText", {
+		chat_id: chatId,
+		message_id: messageId,
+		text: toTelegramHtml(text),
+		parse_mode: "HTML",
+		...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+	});
+}
+
+/** Acknowledge an inline-button press (clears the button's spinner). Optional
+ * text shows as a brief toast; Telegram truncates it to 200 chars. */
+export async function answerCallbackQuery(
+	token: string,
+	callbackQueryId: string,
+	text?: string,
+): Promise<void> {
+	await tg(token, "answerCallbackQuery", {
+		callback_query_id: callbackQueryId,
+		...(text ? { text } : {}),
+	});
 }
 
 export async function sendVoice(token: string, chatId: number, wav: Buffer): Promise<void> {
@@ -192,12 +255,12 @@ export async function getVoice(token: string, fileId: string): Promise<Buffer> {
 	});
 }
 
-/** Long-poll updates. Yields { chatId, text?, voiceFileId? } per message. */
+/** Long-poll updates. Yields messages and inline-button presses. */
 export async function* pollMessages(
 	token: string,
 	allowedChatIds: number[],
 	signal: AbortSignal,
-): AsyncGenerator<{ chatId: number; text?: string; voiceFileId?: string }> {
+): AsyncGenerator<PolledUpdate> {
 	// Fail closed: an empty allow-list must never be treated as "allow all".
 	if (allowedChatIds.length === 0) {
 		throw new Error("allowedChatIds is empty; refusing to poll Telegram");
@@ -223,13 +286,27 @@ export async function* pollMessages(
 			const updates = (await tg(token, "getUpdates", {
 				offset,
 				timeout: 50,
-				allowed_updates: ["message"],
+				allowed_updates: ["message", "callback_query"],
 			}, signal)) as TgUpdate[];
 			for (const u of updates ?? []) {
 				const updateId = (u as { update_id: number }).update_id;
 				// Confirm every update exactly once, even ones we skip — otherwise a
 				// lone photo/sticker re-pollutes every subsequent getUpdates response.
 				offset = Math.max(offset, updateId + 1);
+				// Inline-button presses have no date, so the staleness filter below
+				// can't apply; the callback id is globally unique, so it dedups
+				// redeliveries on its own.
+				const cq = u.callback_query;
+				if (cq) {
+					const chatId = cq.message?.chat.id ?? cq.from.id;
+					if (!allowedChatIds.includes(chatId)) continue;
+					if (!remember(`cq:${cq.id}`)) continue;
+					yield {
+						chatId,
+						callback: { id: cq.id, data: cq.data ?? "", messageId: cq.message?.message_id },
+					};
+					continue;
+				}
 				const msg = u.message;
 				if (!msg?.text && !msg?.voice) continue;
 				if (!allowedChatIds.includes(msg.chat.id)) continue;

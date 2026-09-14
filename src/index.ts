@@ -8,7 +8,7 @@ import { EnvHttpProxyAgent, setGlobalDispatcher } from "undici";
 setGlobalDispatcher(new EnvHttpProxyAgent({ allowH2: false }));
 const proxyUrl = process.env.HTTPS_PROXY ?? process.env.https_proxy;
 if (proxyUrl) console.log(`using proxy ${proxyUrl}`);
-import { deepestCause, deleteMessage, errorCode, getVoice, pollMessages, sendMessage, setMyCommands, sendTyping, sendVoice } from "./telegram.js";
+import { answerCallbackQuery, deepestCause, deleteMessage, editMessageText, errorCode, getVoice, pollMessages, sendMessage, setMyCommands, sendTyping, sendVoice, type InlineButton } from "./telegram.js";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import { ChatSessions, runOneShot, turnOutcome, type TurnOutcome } from "./session.js";
 import { takePendingMemoryUpdate, pendingMemoryStaged, approveStagedMemory, dropStagedMemory, loadMemory } from "./memory.js";
@@ -94,6 +94,109 @@ function startTypingIndicator(token: string, chatId: number): () => void {
 }
 
 const TOOL_ICONS: Record<string, string> = { websearch: "🔍", fetchpage: "🌐", bash: "⚙️", read: "📄", schedule: "🔁" };
+
+// ---- /model inline menu -----------------------------------------------------
+// Two-level navigation instead of a long pasteable list: first pick a provider,
+// then a model, all by tapping buttons. Callback data is JSON — provider/model
+// ids are opaque and could contain the ':' separator, and JSON keeps the
+// payload unambiguous (and under Telegram's 64-byte callback limit).
+const MODELS_PER_PAGE = 10;
+const cb = (a: string, extra?: Record<string, string | number>) => JSON.stringify({ a, ...extra });
+
+/** Provider-selection page — the first page /model shows, with the current model. */
+async function providerMenu(): Promise<{ text: string; rows: InlineButton[][] }> {
+	const providers = await chats.providers();
+	const rows: InlineButton[][] = providers.map((p) => [{ text: p, callback_data: cb("provider", { p }) }]);
+	rows.push([{ text: "✖ Cancel", callback_data: cb("cancel") }]);
+	const body =
+		providers.length === 0
+			? "No providers in the model catalog yet."
+			: "Choose a provider:";
+	return {
+		text: `Current model: ${await chats.currentModel()}\n\n${body}`,
+		rows,
+	};
+}
+
+/** One page of a provider's model list, with prev/next/back/cancel navigation. */
+async function modelMenu(provider: string, page: number): Promise<{ text: string; rows: InlineButton[][] }> {
+	const models = await chats.models(provider);
+	const pages = Math.max(1, Math.ceil(models.length / MODELS_PER_PAGE));
+	const current = Math.min(Math.max(0, page), pages - 1);
+	const slice = models.slice(current * MODELS_PER_PAGE, (current + 1) * MODELS_PER_PAGE);
+	const rows: InlineButton[][] = slice.map((m) => [{ text: m.label, callback_data: cb("set", { s: m.spec }) }]);
+	const nav: InlineButton[] = [];
+	if (current > 0) nav.push({ text: "‹ Prev", callback_data: cb("page", { p: provider, n: current - 1 }) });
+	if (current < pages - 1) nav.push({ text: "Next ›", callback_data: cb("page", { p: provider, n: current + 1 }) });
+	if (nav.length) rows.push(nav);
+	rows.push([
+		{ text: "‹ Back", callback_data: cb("providers") },
+		{ text: "✖ Cancel", callback_data: cb("cancel") },
+	]);
+	const header =
+		models.length === 0
+			? `No models found for provider "${provider}".`
+			: pages > 1
+				? `${provider} — choose a model (page ${current + 1}/${pages}):`
+				: `${provider} — choose a model:`;
+	return { text: header, rows };
+}
+
+/** Inline-button press: navigate the /model menu, or apply a model switch. */
+async function handleCallback(chatId: number, press: { id: string; data: string; messageId?: number }): Promise<void> {
+	const token = config.telegramBotToken;
+	let action: { a?: string; p?: string; n?: number; s?: string };
+	try {
+		action = JSON.parse(press.data) as { a?: string; p?: string; n?: number; s?: string };
+	} catch {
+		await answerCallbackQuery(token, press.id, "Unknown action");
+		return;
+	}
+	if (action.a === "cancel") {
+		await answerCallbackQuery(token, press.id, "Cancelled");
+		if (press.messageId !== undefined) await deleteMessage(token, chatId, press.messageId);
+		return;
+	}
+	if (action.a === "providers") {
+		await answerCallbackQuery(token, press.id);
+		if (press.messageId !== undefined) {
+			const menu = await providerMenu();
+			await editMessageText(token, chatId, press.messageId, menu.text, { inline_keyboard: menu.rows });
+		}
+		return;
+	}
+	if (action.a === "provider" && action.p) {
+		await answerCallbackQuery(token, press.id);
+		if (press.messageId !== undefined) {
+			const menu = await modelMenu(action.p, 0);
+			await editMessageText(token, chatId, press.messageId, menu.text, { inline_keyboard: menu.rows });
+		}
+		return;
+	}
+	if (action.a === "page" && action.p && action.n !== undefined) {
+		await answerCallbackQuery(token, press.id);
+		if (press.messageId !== undefined) {
+			const menu = await modelMenu(action.p, action.n);
+			await editMessageText(token, chatId, press.messageId, menu.text, { inline_keyboard: menu.rows });
+		}
+		return;
+	}
+	if (action.a === "set" && action.s) {
+		const err = await chats.switchModel(action.s);
+		if (err) {
+			await answerCallbackQuery(token, press.id, err.slice(0, 200));
+		} else {
+			await answerCallbackQuery(token, press.id, `Model set to ${action.s}`);
+			if (press.messageId !== undefined) {
+				await editMessageText(token, chatId, press.messageId, `✅ Model set to ${action.s} — new sessions use it.`, {
+					inline_keyboard: [],
+				});
+			}
+		}
+		return;
+	}
+	await answerCallbackQuery(token, press.id, "Unknown action");
+}
 
 /** Send a small status message when a tool starts; delete it when it ends. */
 function watchToolActivity(
@@ -211,20 +314,20 @@ async function handleMessage(chatId: number, prompt: string, voice: boolean): Pr
 		}
 		return;
 	}
-	if (prompt === "/model" || prompt.startsWith("/model ")) {
+	if (prompt === "/model") {
+		const menu = await providerMenu();
+		await sendMessage(config.telegramBotToken, chatId, menu.text, { inline_keyboard: menu.rows });
+		return;
+	}
+	if (prompt.startsWith("/model ")) {
 		const arg = prompt.slice(6).trim();
-		if (!arg) {
-			const models = await chats.models();
-			await sendMessage(config.telegramBotToken, chatId, `Available models:\n${models.join("\n")}\n\nSwitch with /model provider/id`);
-		} else {
-			const err = await chats.switchModel(arg);
-			await sendMessage(config.telegramBotToken, chatId, err ?? `Model set to ${arg} — new sessions use it`);
-		}
+		const err = await chats.switchModel(arg);
+		await sendMessage(config.telegramBotToken, chatId, err ?? `Model set to ${arg} — new sessions use it`);
 		return;
 	}
 	if (prompt === "/start" || prompt === "/new") {
 		chats.reset(chatId);
-		await sendMessage(config.telegramBotToken, chatId, "Fresh session started");
+		await sendMessage(config.telegramBotToken, chatId, `Fresh session started — model: ${await chats.currentModel()}`);
 		return;
 	}
 	if (prompt.startsWith("/allow ")) {
@@ -298,8 +401,21 @@ async function handleMessage(chatId: number, prompt: string, voice: boolean): Pr
 	}
 }
 
-for await (const { chatId, text: rawText, voiceFileId } of pollMessages(config.telegramBotToken, config.allowedChatIds, controller.signal)) {
+for await (const { chatId, text: rawText, voiceFileId, callback } of pollMessages(config.telegramBotToken, config.allowedChatIds, controller.signal)) {
 	try {
+		if (callback) {
+			// Menu taps interrupt like any other message; the model switch itself
+			// is serialized into the chat's chain so it can't race a running turn.
+			const active = activeTurns.get(chatId);
+			if (active) await active();
+			enqueue(chatId, () =>
+				handleCallback(chatId, callback).catch((err) => {
+					console.error("callback failed:", err);
+					return deliver(chatId, `Error: request failed — ${describeError(err)}. Please resend.`);
+				}),
+			);
+			continue;
+		}
 		let prompt = rawText ?? "";
 		if (voiceFileId) {
 			if (!useStt) {

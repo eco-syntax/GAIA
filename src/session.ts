@@ -155,9 +155,26 @@ export class ChatSessions {
 		return warning;
 	}
 
-	/** Every selectable model as "provider/id". */
-	async models(): Promise<string[]> {
-		return (await this.runtime()).getModels().map((m) => `${m.provider}/${m.id}`);
+	/** Label for the model the next session will use, with pi's default
+	 * resolution and catalog fallbacks already applied. */
+	async currentModel(): Promise<string> {
+		const runtime = await this.runtime();
+		const { model } = await resolveModel(this.config, runtime);
+		if (!model) return "pi's default (no model configured)";
+		return `${model.provider}/${model.id}`;
+	}
+
+	/** Unique provider ids present in the catalog, sorted. */
+	async providers(): Promise<string[]> {
+		return [...new Set((await this.runtime()).getProviders().map((p) => p.id))].sort();
+	}
+
+	/** Selectable models for one provider, in catalog order. */
+	async models(provider: string): Promise<ModelChoice[]> {
+		return (await this.runtime()).getModels(provider).map((m) => ({
+			label: m.name && m.name !== m.id ? m.name : m.id,
+			spec: `${m.provider}/${m.id}`,
+		}));
 	}
 
 	/** Validate a "provider/id" switch, persist it, and drop live sessions so
@@ -174,6 +191,13 @@ export class ChatSessions {
 		this.sessions.clear();
 		return null;
 	}
+}
+
+export interface ModelChoice {
+	/** Button label — the model's human name when it has one, else its id. */
+	label: string;
+	/** "provider/id" spec accepted by switchModel. */
+	spec: string;
 }
 
 export interface TurnOutcome {
