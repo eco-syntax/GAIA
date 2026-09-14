@@ -1,4 +1,3 @@
-await import("./src/session.js");
 try { await import("./src/index.js"); } catch (e) {
   if (!String((e as Error).message).includes("TELEGRAM_BOT_TOKEN")) throw e;
 }
