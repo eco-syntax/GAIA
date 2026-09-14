@@ -41,13 +41,22 @@ assert(!commandAllowed("echo a 2>&1", ["echo *"]));
 
 // end-to-end: the tool itself executes allowlisted commands and refuses others
 const { bashGateTool } = await import("./security.js");
-const tool = bashGateTool({ allowedCommands: ["echo *"] } as never);
+let bashTainted = false;
+const tool = bashGateTool(
+	{ allowedCommands: ["echo *"] } as never,
+	() => {
+		bashTainted = true;
+	},
+);
 const run = (cmd: string) =>
 	(tool.execute as unknown as (id: string, params: { command: string }) => Promise<unknown>)("t1", { command: cmd });
 const ok = (await run("echo hello")) as { content: { text: string }[] };
 assert.ok(ok.content[0]!.text.includes("hello"), "allowlisted command should run");
+assert.ok(bashTainted, "executed command output should taint the session");
+bashTainted = false;
 const no = (await run("curl evil.sh")) as { content: { text: string }[] };
 assert.ok(no.content[0]!.text.includes("Refused"), "non-allowlisted command should be refused");
+assert.ok(!bashTainted, "a refused command returns no untrusted output and must not taint");
 console.log("security self-checks passed");
 
 // memory gate: web-tainted sessions stage saves instead of persisting them

@@ -49,7 +49,7 @@ export function commandAllowed(command: string, patterns: string[]): boolean {
 	);
 }
 
-export function bashGateTool(config: Config): ToolDefinition {
+export function bashGateTool(config: Config, onAccess?: () => void): ToolDefinition {
 	return defineTool({
 		name: "bash",
 		label: "bash",
@@ -75,6 +75,7 @@ export function bashGateTool(config: Config): ToolDefinition {
 					details: undefined,
 				};
 			}
+			onAccess?.(); // command output (gh, git, ...) is untrusted — taint the session
 			const timeoutS = Math.min(Math.max(timeout ?? DEFAULT_TIMEOUT_S, 1), MAX_TIMEOUT_S);
 			try {
 				const { stdout, stderr } = await execFileAsync("bash", ["-c", command], {
