@@ -97,7 +97,7 @@ const TOOL_ICONS: Record<string, string> = { websearch: "🔍", fetchpage: "🌐
 
 /** Send a small status message when a tool starts; delete it when it ends. */
 function watchToolActivity(
-	session: ReturnType<typeof Object>,
+	session: AgentSession,
 	token: string,
 	chatId: number,
 ): () => void {
