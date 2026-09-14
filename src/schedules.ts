@@ -1,31 +1,118 @@
 import type { Schedule } from "./config.js";
 import { runOneShot } from "./session.js";
 import type { Config } from "./config.js";
+import { addSchedule, listSchedules, parseAt, parseEvery, removeSchedule } from "./scheduleStore.js";
+import { Type } from "@sinclair/typebox";
+import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 
 /**
- * Scheduled tasks: each entry is just {cron-ish, chatId, prompt}. The gateway
- * runs a headless pi turn and delivers the text to the chat. No job types, no
- * DSL — the prompt IS the task.
+ * Agent-facing scheduling tool, in the same style as memory.ts: a tool the LLM
+ * can call to set/list/remove recurring tasks at runtime. The result of each
+ * task is delivered to the chat it was created in (the chatId closure).
  */
-
-function parseEvery(every: string): number {
-	const m = /^(\d+)([mhd])$/.exec(every);
-	if (!m) throw new Error(`Invalid schedule interval: ${every} (use e.g. "30m", "2h", "1d")`);
-	const n = Number(m[1]);
-	return n * (m[2] === "m" ? 60_000 : m[2] === "h" ? 3_600_000 : 86_400_000);
+export function scheduleTool(chatId: number): ToolDefinition {
+	return defineTool({
+		name: "schedule",
+		label: "Scheduled tasks",
+		description:
+			"Set or manage recurring background tasks. Each task runs on a timer and its output is delivered to this chat as a message. Use for cron-style reminders and periodic jobs (e.g. 'every morning at 08:00 summarize my open PRs'). Actions: 'add' creates a task (either an interval like '30m'/'2h'/'1d', or a daily time 'HH:MM'), 'remove' deletes one by name, 'list' shows all.",
+		parameters: Type.Object({
+			action: Type.Union([Type.Literal("add"), Type.Literal("remove"), Type.Literal("list")]),
+			name: Type.Optional(Type.String({ description: "Unique name for the task (add/remove)" })),
+			prompt: Type.Optional(Type.String({ description: "What the task should do, as a plain-text instruction (add)" })),
+			every: Type.Optional(Type.String({ description: "Interval: '30m', '2h', '1d' (add; mutually exclusive with at)" })),
+			at: Type.Optional(Type.String({ description: "Daily time 'HH:MM' (add; mutually exclusive with every)" })),
+		}),
+		async execute(_id, params) {
+			if (params.action === "list") {
+				const scheds = listSchedules();
+				if (!scheds.length) {
+					return { content: [{ type: "text" as const, text: "No scheduled tasks." }], details: undefined };
+				}
+				const text = scheds
+					.map((s) => `\u2022 ${s.name} \u2014 ${s.every ? `every ${s.every}` : `daily at ${s.at}`}: ${s.prompt}`)
+					.join("\n");
+				return { content: [{ type: "text" as const, text }], details: undefined };
+			}
+			if (params.action === "remove") {
+				const name = (params.name ?? "").trim();
+				if (!name) {
+					return { content: [{ type: "text" as const, text: "Specify the task name to remove." }], details: undefined };
+				}
+				const text = removeSchedule(name)
+					? `Removed schedule "${name}".`
+					: `No schedule named "${name}".`;
+				return { content: [{ type: "text" as const, text }], details: undefined };
+			}
+			// add
+			const name = (params.name ?? "").trim();
+			const prompt = (params.prompt ?? "").trim();
+			if (!name || !prompt) {
+				return { content: [{ type: "text" as const, text: "Provide both a name and a prompt for the task." }], details: undefined };
+			}
+			if (!params.every && !params.at) {
+				return { content: [{ type: "text" as const, text: "Specify an interval (every) or a daily time (at)." }], details: undefined };
+			}
+			const res = addSchedule({ name, prompt, every: params.every, at: params.at, chatId });
+			return {
+				content: [{
+					type: "text" as const,
+					text: res.ok ? `Scheduled "${name}".` : `Could not schedule: ${res.error}`,
+				}],
+				details: undefined,
+			};
+		},
+	});
 }
+
+/**
+ * Scheduled tasks: each entry is just {name, every|at, chatId, prompt}. The
+ * gateway runs a headless pi turn on a timer and delivers the text to the chat.
+ * No job types, no DSL — the prompt IS the task.
+ *
+ * The scheduler reads the LIVE registry (scheduleStore) every tick rather than
+ * a startup snapshot, so tasks added/removed at runtime take effect without a
+ * gateway restart.
+ */
 
 /** Whether the daily `at: "HH:MM"` time fell in (prev, now] — catches ticks skipped by event-loop stalls or suspend/resume. */
 export function crossedDailyTime(prev: Date, now: Date, at: string): boolean {
-	const [h, min] = at.split(":").map(Number);
+	const t = parseAt(at);
+	if (!t) return false;
 	const atToday = new Date(now);
-	atToday.setHours(h!, min!, 0, 0);
+	atToday.setHours(t.h, t.min, 0, 0);
 	return atToday > prev && atToday <= now;
+}
+
+/** Hard cap on what gets injected into a chat session: the delivered chat message
+ * can be long, but the in-context copy must stay small at a 32K window. */
+const INJECT_CHAR_LIMIT = 6000;
+
+/** Append a schedule's result into the chat's session so follow-ups are grounded.
+ * Hermes-style cronjobs post in isolation and the agent "forgets" them the moment
+ * the task ends; this gives the next chat turn the task's output as context. */
+async function injectResult(
+	sched: Schedule,
+	text: string,
+	inject: ((chatId: number, content: string) => Promise<void>) | undefined,
+): Promise<void> {
+	if (sched.inject === false || !inject) return;
+	const ranAt = new Date();
+	const body =
+		text.length > INJECT_CHAR_LIMIT
+			? `${text.slice(0, INJECT_CHAR_LIMIT)}\n…(truncated)`
+			: text;
+	try {
+		await inject(sched.chatId, `Scheduled task "${sched.name}" result (${ranAt.toISOString()}):\n${body}`);
+	} catch (err) {
+		console.error(`injecting schedule "${sched.name}" result into session failed:`, err);
+	}
 }
 
 export function startScheduler(
 	config: Config,
 	deliver: (chatId: number, text: string) => Promise<void>,
+	injectContext?: (chatId: number, content: string) => Promise<void>,
 ): NodeJS.Timeout {
 	const nextRun = new Map<string, number>();
 	// Initialize to startup time: a fresh start after today's `at` has already
@@ -36,11 +123,15 @@ export function startScheduler(
 			const now = new Date();
 			const prev = lastCheck;
 			lastCheck = now;
-			for (const sched of config.schedules satisfies Schedule[]) {
+			for (const sched of listSchedules() satisfies Schedule[]) {
 				const key = sched.name;
 				let due = false;
 				if (sched.every) {
 					const interval = parseEvery(sched.every);
+					if (Number.isNaN(interval)) {
+						console.error(`Schedule "${sched.name}" has invalid every "${sched.every}"; skipped`);
+						continue;
+					}
 					const last = nextRun.get(key) ?? now.getTime(); // first tick runs immediately
 					due = now.getTime() >= last;
 					if (due) nextRun.set(key, now.getTime() + interval);
@@ -58,7 +149,10 @@ export function startScheduler(
 					sched.prompt,
 					{ tools: ["read", "bash"] },
 				)
-					.then((text) => deliver(sched.chatId, text))
+					.then(async (text) => {
+						await deliver(sched.chatId, text);
+						await injectResult(sched, text, injectContext);
+					})
 					.catch((err) => {
 						console.error(`schedule ${sched.name} failed:`, err);
 						void deliver(sched.chatId, `Scheduled task "${sched.name}" failed: ${err}`).catch(() => {});

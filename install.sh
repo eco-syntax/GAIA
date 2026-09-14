@@ -14,13 +14,76 @@
 set -euo pipefail
 
 LLAMA_VERSION=b10823 # pinned llama.cpp release; bump to update the bundled server
+# whisper.cpp prebuilt bins now ship only on nightly tags (the v1.9.x "latest" releases attach no
+# binaries); b5130 is the pinned tag — never use releases/latest, it is a moving target
+WHISPER_VERSION=b5130
 GREENPI_REPO="${GREENPI_REPO:-https://github.com/ColbyBrown/GreenPi}"
 GREENPI_SRC="${GREENPI_SRC:-$HOME/GreenPi}"
 GREENPI_HOME="${GREENPI_HOME:-$HOME/.greenpi}"
 GAIA_DIR="${GAIA_DIR:-$HOME/GAIA}"
 BIN_DIR="${BIN_DIR:-$HOME/.local/bin}"
 
+# SHA-256 of every pinned release asset, computed from the official GitHub release artifacts.
+# Upstream publishes no SHA256SUMS files, so the hashes are pinned here: if a release asset ever
+# changes (or a tag is moved), the install fails instead of extracting/executing unknown code.
+# (case-based lookups, not declare -A — macOS ships bash 3.2)
+llama_sha() {
+	case "$1" in
+		llama-b10823-bin-ubuntu-x64.tar.gz) echo 60bded941b372d33af43fcb2725645f3e683d8a1101e745cff00e5c3b05e58f4 ;;
+		llama-b10823-bin-ubuntu-arm64.tar.gz) echo d00c11473ba50333aa93f390dd0313bedc89b1d579debf9c076007b91d0e7962 ;;
+		llama-b10823-bin-ubuntu-vulkan-x64.tar.gz) echo 46720f165c1038b2cce6fbfed79370accdf74fadb0b287f9696023ae94493288 ;;
+		llama-b10823-bin-ubuntu-vulkan-arm64.tar.gz) echo 0077ba29925d20501fa496ae2c02529338a9b0658bbdd1723a640b8384c0fe04 ;;
+		llama-b10823-bin-macos-arm64.tar.gz) echo 4c5b7456e1cc6dc95bb550c805ddbec4831a87be1507260c742c9650648744ca ;;
+		llama-b10823-bin-macos-x64.tar.gz) echo d76a9dadc80a95ac0b2ac006983ccdcb5bfdb9d585d16c70bc8d2e73cb6cb57d ;;
+	esac
+}
+piper_sha() {
+	case "$1" in
+		piper_linux_x86_64.tar.gz) echo a50cb45f355b7af1f6d758c1b360717877ba0a398cc8cbe6d2a7a3a26e225992 ;;
+		piper_linux_aarch64.tar.gz) echo fea0fd2d87c54dbc7078d0f878289f404bd4d6eea6e7444a77835d1537ab88eb ;;
+		piper_macos_aarch64.tar.gz) echo 6b1eb03b3735946cb35216e063e7eebcc33a6bbf5dd96ec0217959bf1cdcb0cc ;;
+		piper_macos_x64.tar.gz) echo ced85c0a3df13945b1e623b878a48fdc2854d5c485b4b67f62857cf551deaf8b ;;
+	esac
+}
+whisper_sha() {
+	case "$1" in
+		whisper-bin-ubuntu-x64.tar.gz) echo 53e7fd8b5764edad916b8848dd0af6abb1ff1d3b86c899e79c78652412536c32 ;;
+		whisper-bin-ubuntu-arm64.tar.gz) echo 93532a0e3777f26f041ffa358ee77dd88b1a33a86847c1990745327ff335a5d6 ;;
+	esac
+}
+
+# verify_sha256 <file> <expected-hash> <label> — abort install on any mismatch
+verify_sha256() {
+	local file=$1 want=$2 label=$3 got
+	[ -n "$want" ] || { echo "no pinned checksum for $label — refusing to install" >&2; exit 1; }
+	if command -v sha256sum >/dev/null; then
+		got=$(sha256sum "$file" | cut -d' ' -f1)
+	elif command -v shasum >/dev/null; then
+		got=$(shasum -a 256 "$file" | cut -d' ' -f1)
+	else
+		echo "missing sha256 tool (need sha256sum or shasum)" >&2; exit 1
+	fi
+	[ "$got" = "$want" ] || { echo "checksum mismatch for $label: expected $want, got $got" >&2; exit 1; }
+	echo "checksum ok: $label"
+}
+
 need() { command -v "$1" >/dev/null || { echo "missing dependency: $1" >&2; exit 1; }; }
+
+# print JSON mapping "@scope/name" → "file:<path>.tgz" for every tarball in $1/tarballs
+tarball_deps() {
+	node - "$1" <<'EOF'
+const fs = require("fs");
+const dir = `${process.argv[2]}/tarballs`;
+const deps = {};
+for (const f of fs.readdirSync(dir).filter((f) => f.endsWith(".tgz"))) {
+	// tarball filenames vary across npm versions ("@scope+name-x.tgz" vs "scope-name-x.tgz") —
+	// read the real package name from inside instead of parsing the filename
+	const name = JSON.parse(require("child_process").execSync(`tar -xzOf ${dir}/${f} package/package.json`, { encoding: "utf8" })).name;
+	deps[name] = `file:${dir}/${f}`;
+}
+console.log(JSON.stringify(deps));
+EOF
+}
 need git
 need npm
 node_major=$(node -p 'process.versions.node.split(".")[0]')
@@ -55,17 +118,11 @@ node scripts/local-release.mjs \
 
 echo "==> 4/10 isolated greenpi install at $GREENPI_HOME/node"
 mkdir -p "$GREENPI_HOME/node"
-node - "$GREENPI_HOME" <<'EOF'
+deps=$(tarball_deps "$GREENPI_HOME")
+node - "$GREENPI_HOME" "$deps" <<'EOF'
 const fs = require("fs");
-const home = process.argv[2];
-const dir = `${home}/tarballs`;
-const deps = {};
-for (const f of fs.readdirSync(dir).filter((f) => f.endsWith(".tgz"))) {
-	// tarball filenames vary across npm versions ("@scope+name-x.tgz" vs "scope-name-x.tgz") —
-	// read the real package name from inside instead of parsing the filename
-	const name = JSON.parse(require("child_process").execSync(`tar -xzOf ${dir}/${f} package/package.json`, { encoding: "utf8" })).name;
-	deps[name] = `file:${dir}/${f}`;
-}
+const [home, depsJson] = process.argv.slice(2);
+const deps = JSON.parse(depsJson);
 fs.writeFileSync(
 	`${home}/node/package.json`,
 	JSON.stringify({ private: true, dependencies: deps, overrides: deps }, null, "\t") + "\n",
@@ -83,17 +140,13 @@ echo "==> 5/10 wire GAIA ($GAIA_DIR) to the GreenPi tarballs"
 	# point the two pi deps at the fork AND override every internal @earendil-works dep with the
 	# fork's tarballs — otherwise nested deps resolve from the npm registry (upstream pi) and the
 	# local-first provider changes in packages/ai silently don't ship
-	node - "$GAIA_DIR" "$GREENPI_HOME" <<'EOF'
+	deps=$(tarball_deps "$GREENPI_HOME")
+	node - "$GAIA_DIR" "$deps" <<'EOF'
 const fs = require("fs");
-const [gaia, home] = process.argv.slice(2);
-const dir = `${home}/tarballs`;
+const [gaia, depsJson] = process.argv.slice(2);
+const deps = JSON.parse(depsJson);
 const p = `${gaia}/package.json`;
 const pkg = JSON.parse(fs.readFileSync(p, "utf8"));
-const deps = {};
-for (const f of fs.readdirSync(dir).filter((f) => f.endsWith(".tgz"))) {
-	const name = JSON.parse(require("child_process").execSync(`tar -xzOf ${dir}/${f} package/package.json`, { encoding: "utf8" })).name;
-	deps[name] = `file:${dir}/${f}`;
-}
 for (const dep of ["@earendil-works/pi-coding-agent", "@earendil-works/pi-server"]) {
 	pkg.dependencies[dep] = deps[dep];
 }
@@ -128,6 +181,7 @@ else
 	echo "downloading $url"
 	tmp=$(mktemp -d)
 	curl -fL "$url" -o "$tmp/a.tgz"
+	verify_sha256 "$tmp/a.tgz" "$(llama_sha "$asset")" "$asset"
 	mkdir -p "$tmp/x" "$LLAMA_DIR/bin"
 	tar -xzf "$tmp/a.tgz" -C "$tmp/x"
 	# ship the whole dir: llama-server needs its side-by-side libs (RUNPATH $ORIGIN);
@@ -242,6 +296,7 @@ else
 			else
 				tmp=$(mktemp -d)
 				curl -fL "https://github.com/rhasspy/piper/releases/download/2023.11.14-2/$piper_tgz" -o "$tmp/p.tgz"
+				verify_sha256 "$tmp/p.tgz" "$(piper_sha "$piper_tgz")" "$piper_tgz"
 				mkdir -p "$tmp/x" "$HOME/.pi-gateway/piper"
 				tar -xzf "$tmp/p.tgz" -C "$tmp/x"
 				cp -a "$tmp/x/piper/." "$HOME/.pi-gateway/piper/"
@@ -276,7 +331,8 @@ else
 				echo "no prebuilt whisper.cpp for $(uname -s)/$(uname -m) — install manually (e.g. brew install whisper-cpp)" >&2
 			else
 				tmp=$(mktemp -d)
-				curl -fL "https://github.com/ggml-org/whisper.cpp/releases/latest/download/$wb" -o "$tmp/w.tgz"
+				curl -fL "https://github.com/ggml-org/whisper.cpp/releases/download/${WHISPER_VERSION}/$wb" -o "$tmp/w.tgz"
+				verify_sha256 "$tmp/w.tgz" "$(whisper_sha "$wb")" "$wb"
 				mkdir -p "$tmp/x" "$HOME/.pi-gateway/whisper"
 				tar -xzf "$tmp/w.tgz" -C "$tmp/x"
 				wbin=$(find "$tmp/x" -type f \( -name whisper-cli -o -name whisper -o -name main \) | head -1)
@@ -297,7 +353,6 @@ else
 			echo "downloading ggml-base.en (~148 MB)"
 			curl -fL https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin \
 				-o "$HOME/.pi-gateway/whisper/ggml-base.en.bin"
-			WHISPER_MODEL=$HOME/.pi-gateway/whisper/ggml-base.en.bin
 		fi
 		WHISPER_MODEL=$HOME/.pi-gateway/whisper/ggml-base.en.bin
 
