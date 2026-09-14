@@ -11,13 +11,15 @@ if (proxyUrl) console.log(`using proxy ${proxyUrl}`);
 import { deleteMessage, getVoice, pollMessages, sendMessage, setMyCommands, sendTyping, sendVoice } from "./telegram.js";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import { ChatSessions, runOneShot, turnOutcome, type TurnOutcome } from "./session.js";
-import { takePendingMemoryUpdate } from "./memory.js";
+import { takePendingMemoryUpdate, pendingMemoryStaged, approveStagedMemory, dropStagedMemory, loadMemory } from "./memory.js";
 import { webTools } from "./web.js";
 import { startScheduler } from "./schedules.js";
+import { initScheduleStore } from "./scheduleStore.js";
 import { synthesize, ttsAvailable } from "./tts.js";
 import { transcribe, sttAvailable } from "./stt.js";
 
 const config = loadConfig();
+initScheduleStore(config.schedules);
 const chats = new ChatSessions(config);
 const tools = webTools();
 const useTts = config.piperVoice ? ttsAvailable(config.piperVoice) : false;
@@ -91,7 +93,7 @@ function startTypingIndicator(token: string, chatId: number): () => void {
 	return () => clearInterval(timer);
 }
 
-const TOOL_ICONS: Record<string, string> = { websearch: "🔍", fetchpage: "🌐", bash: "⚙️", read: "📄" };
+const TOOL_ICONS: Record<string, string> = { websearch: "🔍", fetchpage: "🌐", bash: "⚙️", read: "📄", schedule: "🔁" };
 
 /** Send a small status message when a tool starts; delete it when it ends. */
 function watchToolActivity(
@@ -132,7 +134,20 @@ function shutdown() {
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
 
-startScheduler(config, (chatId, text) => deliver(chatId, text));
+startScheduler(
+	config,
+	(chatId, text) => deliver(chatId, text),
+	// Hermes-style cronjobs post in isolation and leave the agent with no memory of
+	// them. Append each result to the chat's session log (same pattern as memory) so
+	// follow-up questions are grounded in what the task actually found.
+	async (chatId, content) => {
+		const session = await chats.get(chatId);
+		await session.sendCustomMessage(
+			{ customType: "scheduled_task", content, display: false },
+			{ triggerTurn: false },
+		);
+	},
+);
 // Surface the chat commands in Telegram's popup slash-command list.
 void setMyCommands(config.telegramBotToken, [
 	{ command: "new", description: "Start a fresh session" },
@@ -219,6 +234,39 @@ async function handleMessage(chatId: number, prompt: string, voice: boolean): Pr
 		} else {
 			addAllowedCommand(config, pattern);
 			await sendMessage(config.telegramBotToken, chatId, `Allowed: ${pattern}`);
+		}
+		return;
+	}
+	if (prompt === "/memory") {
+		const staged = pendingMemoryStaged();
+		const snapshot = loadMemory();
+		await sendMessage(
+			config.telegramBotToken,
+			chatId,
+			`Memory:\n${snapshot || "(empty)"}\n\nPending approval:\n${staged.map((l) => `- ${l}`).join("\n") || "(none)"}\n\n/memory-approve saves pending entries; /memory-deny discards them.`,
+		);
+		return;
+	}
+	if (prompt === "/memory-approve" || prompt === "/memory-deny") {
+		const approve = prompt === "/memory-approve";
+		const entries = approve ? approveStagedMemory() : dropStagedMemory();
+		if (entries.length === 0) {
+			await sendMessage(config.telegramBotToken, chatId, "Nothing pending.");
+			return;
+		}
+		const summary = entries.map((l) => `- ${l}`).join("\n");
+		await sendMessage(config.telegramBotToken, chatId, `${approve ? "Saved to memory" : "Discarded"}:\n${summary}`);
+		// Let a live session know, so the model doesn't re-stage or misreport.
+		const live = chats.peek(chatId);
+		if (live) {
+			await live.sendCustomMessage(
+				{
+					customType: "memory",
+					content: approve ? `User approved memory entries:\n${summary}` : `User rejected memory entries:\n${summary}`,
+					display: false,
+				},
+				{ triggerTurn: false },
+			);
 		}
 		return;
 	}
