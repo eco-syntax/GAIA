@@ -61,7 +61,6 @@ export function setModel(config: Config, model: Config["model"]): void {
 }
 
 export const stateDir = STATE_DIR;
-export const researchDir = join(STATE_DIR, "research");
 
 /** Add a bash allowlist pattern: update the in-memory config AND persist it. */
 export function addAllowedCommand(config: Config, pattern: string): void {
