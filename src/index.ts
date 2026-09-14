@@ -9,6 +9,7 @@ setGlobalDispatcher(new EnvHttpProxyAgent({ allowH2: false }));
 const proxyUrl = process.env.HTTPS_PROXY ?? process.env.https_proxy;
 if (proxyUrl) console.log(`using proxy ${proxyUrl}`);
 import { answerCallbackQuery, deepestCause, deleteMessage, editMessageText, errorCode, getVoice, pollMessages, sendMessage, setMyCommands, sendTyping, sendVoice, type InlineButton } from "./telegram.js";
+import { toSpokenText } from "./format.js";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import { ChatSessions, runOneShot, turnOutcome, type TurnOutcome } from "./session.js";
 import { takePendingMemoryUpdate, pendingMemoryStaged, approveStagedMemory, dropStagedMemory, loadMemory } from "./memory.js";
@@ -74,7 +75,9 @@ async function deliverOutcome(chatId: number, outcome: TurnOutcome, voice: boole
 async function deliver(chatId: number, text: string, voice = false): Promise<void> {
 	if (voice && useTts && config.piperVoice) {
 		try {
-			const { data, mime } = await synthesize(text, config.piperVoice);
+			// Voice notes speak plain prose: no markdown syntax read aloud, no
+			// reasoning steps that a text reply would leave out.
+			const { data, mime } = await synthesize(toSpokenText(text), config.piperVoice);
 			if (mime === "audio/ogg") {
 				await sendVoice(config.telegramBotToken, chatId, data);
 				return;
