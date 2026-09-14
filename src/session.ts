@@ -6,7 +6,8 @@ import {
 	type AgentSession,
 } from "@earendil-works/pi-coding-agent";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { setModel } from "./config.js";
+import { join } from "node:path";
+import { setModel, stateDir } from "./config.js";
 import type { Config } from "./config.js";
 import { webTools } from "./web.js";
 import { loadMemory, memoryTools, takePendingMemoryUpdate } from "./memory.js";
@@ -72,7 +73,7 @@ export class ChatSessions {
 		const runtime = await this.runtime();
 		const loader = new DefaultResourceLoader({
 			cwd: process.cwd(),
-			agentDir: `${process.env.HOME}/.pi-gateway/agent`,
+			agentDir: join(stateDir, "agent"),
 			systemPromptOverride: () => CHAT_SYSTEM_PROMPT,
 			appendSystemPromptOverride: () => [],
 		});
@@ -86,7 +87,7 @@ export class ChatSessions {
 			customTools: [...webTools(), ...memoryTools(), bashGateTool(this.config)],
 			// no excludeTools: our custom "bash" shadows the built-in by name
 			resourceLoader: loader,
-			sessionManager: SessionManager.create(process.cwd(), `${process.env.HOME}/.pi-gateway/sessions/${chatId}`),
+			sessionManager: SessionManager.create(process.cwd(), join(stateDir, "sessions", String(chatId))),
 		});
 		// Memory is appended to the log as custom messages, never prepended to the
 		// system prompt — updates mid-chat reach the next turn without a restart.
