@@ -1,6 +1,6 @@
-// Self-check for the bash gate: npx tsx src/security-check.ts
+// Self-check for the bash gate: npx tsx tests/security-check.ts
 import assert from "node:assert";
-import { commandAllowed } from "./security.js";
+import { commandAllowed } from "../src/security.js";
 assert(commandAllowed("git status", ["git *"]));
 assert(commandAllowed("git commit -m hi", ["git *"]));
 assert(commandAllowed("npm test", ["npm test"]));
@@ -14,7 +14,7 @@ assert(!commandAllowed("", ["git *"]));
 assert(commandAllowed("gh pr list", ["gh *"]));
 
 // end-to-end: the tool itself executes allowlisted commands and refuses others
-import { bashGateTool } from "./security.js";
+import { bashGateTool } from "../src/security.js";
 const tool = bashGateTool({ allowedCommands: ["echo *"] } as never);
 const run = (cmd: string) =>
 	(tool.execute as unknown as (id: string, params: { command: string }) => Promise<unknown>)("t1", { command: cmd });
