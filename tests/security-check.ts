@@ -11,6 +11,26 @@ const fakeHome = mkdtempSync(join(tmpdir(), "memgate-"));
 process.env.HOME = fakeHome;
 
 const { commandAllowed } = await import("../src/security.js");
+
+// SSRF guard: IPv4-embedded-in-IPv6 literals (dotted-quad form) and any
+// unparseable literal must be treated as private/fail-closed (#95).
+const { isPrivateAddress } = await import("../src/web.js");
+const isPrivate = (s: string) => isPrivateAddress(s);
+// dotted-quad IPv4-mapped forms reaching loopback / cloud metadata / private nets
+assert(isPrivate("0:0:0:0:0:ffff:127.0.0.1"));
+assert(isPrivate("0:0:0:0:0:ffff:169.254.169.254"));
+assert(isPrivate("0:0:0:0:0:ffff:10.0.0.1"));
+assert(isPrivate("::ffff:127.0.0.1"));
+assert(!isPrivate("0:0:0:0:0:ffff:8.8.8.8")); // public embedded IPv4 stays public
+// existing IPv6 handling still correct
+assert(isPrivate("::1"));
+assert(isPrivate("::"));
+assert(isPrivate("fe80::1"));
+assert(isPrivate("2002:7f00:0001::")); // 6to4 embeds 127.0.0.1
+assert(!isPrivate("2606:4700:4700::1111"));
+// fail closed on unparseable / malformed literals
+assert(isPrivate("bogus::xyz:1"));
+assert(isPrivate("0:0:0:0:0:ffff:999.0.0.1"));
 assert(commandAllowed("git status", ["git *"]));
 assert(commandAllowed("git commit -m hi", ["git *"]));
 assert(commandAllowed("npm test", ["npm test"]));
