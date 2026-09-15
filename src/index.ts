@@ -1,4 +1,4 @@
-import { loadConfig, stateDir, addAllowedCommand } from "./config.js";
+import { loadConfig, stateDir } from "./config.js";
 import { EnvHttpProxyAgent, setGlobalDispatcher } from "undici";
 
 // Node's global fetch ignores HTTPS_PROXY by default; telegram.ts and web.ts
@@ -17,6 +17,7 @@ import { startScheduler } from "./schedules.js";
 import { initScheduleStore } from "./scheduleStore.js";
 import { synthesize, ttsAvailable } from "./tts.js";
 import { transcribe, sttAvailable } from "./stt.js";
+import { bashGate } from "./security.js";
 
 const config = loadConfig();
 initScheduleStore(config.schedules);
@@ -154,6 +155,7 @@ void setMyCommands(config.telegramBotToken, [
 	{ command: "plan", description: "One-shot build plan for an idea" },
 	{ command: "stop", description: "Interrupt the current turn" },
 	{ command: "model", description: "Show or switch the model (/model [provider/id])" },
+	{ command: "bash", description: "Approve or lock bash for this session (/bash, /bash off)" },
 ]);
 console.log(`pi-gateway running (state: ${stateDir}), ${config.schedules.length} schedules`);
 
@@ -196,6 +198,7 @@ async function handleMessage(chatId: number, prompt: string, voice: boolean): Pr
 				{
 					tools: ["read", "bash"],
 					customTools: tools,
+					chatId,
 					onSession: (session) => {
 						planSession = session;
 						trackTurn(chatId, session);
@@ -224,16 +227,25 @@ async function handleMessage(chatId: number, prompt: string, voice: boolean): Pr
 	}
 	if (prompt === "/start" || prompt === "/new") {
 		chats.reset(chatId);
+		bashGate.reset(chatId);
 		await sendMessage(config.telegramBotToken, chatId, "Fresh session started");
 		return;
 	}
-	if (prompt.startsWith("/allow ")) {
-		const pattern = prompt.slice(7).trim();
-		if (!pattern) {
-			await sendMessage(config.telegramBotToken, chatId, "Usage: /allow <prefix> (e.g. /allow curl *)");
+	if (prompt === "/bash" || prompt === "/bash on" || prompt === "/bash off") {
+		if (prompt === "/bash on" || (prompt === "/bash" && bashGate.blocked(chatId))) {
+			bashGate.allow(chatId);
+			await sendMessage(
+				config.telegramBotToken,
+				chatId,
+				"⚠️ Security warning: bash is now ENABLED for this session. The agent can run any shell command as your user until a new session (/new) starts. This weakens the prompt-injection guard, so only approve if you trust the agent's current inputs. Turn it back off with /bash off.",
+			);
 		} else {
-			addAllowedCommand(config, pattern);
-			await sendMessage(config.telegramBotToken, chatId, `Allowed: ${pattern}`);
+			bashGate.block(chatId);
+			await sendMessage(
+				config.telegramBotToken,
+				chatId,
+				"Bash is now locked again for this session — the agent must ask you before every command.",
+			);
 		}
 		return;
 	}
