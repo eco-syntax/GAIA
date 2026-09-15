@@ -20,6 +20,8 @@ const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (
 const FETCH_CHAR_LIMIT = 20_000;
 /** Where truncated fetchpage results are saved so the model can read the full text. */
 const researchDir = join(stateDir, "research");
+/** Hard cap on any buffered/persisted response body (memory + research dir). */
+export const MAX_BODY_BYTES = 512 * 1024;
 const MAX_REDIRECTS = 5;
 
 // ============================================================================
@@ -48,29 +50,62 @@ function isPrivateIPv4(ip: string): boolean {
 	);
 }
 
-/** Expand an IPv6 literal to its 16 bytes (without a zone id). */
+/**
+ * Expand an IPv6 literal to its 16 bytes (without a zone id). Handles the two
+ * spellings of an embedded IPv4 address: the dotted-quad form (e.g.
+ * `0:0:0:0:0:ffff:127.0.0.1`, a 7-group literal where the last group is four
+ * octets) as well as the explicit hex form (`::ffff:7f00:1`). A dotted-quad
+ * group is split into its four octets (2 bytes each), not `parseInt(group, 16)`,
+ * which would misread it.
+ */
 function ipv6ToBytes(ip: string): number[] | null {
 	const parts = ip.split("%")[0]!.split("::");
 	if (parts.length > 2) return null;
 	const head = parts[0] ? parts[0].split(":") : [];
 	const tail = parts.length === 2 && parts[1] ? parts[1].split(":") : [];
-	const missing = 8 - head.length - tail.length;
+
+	// A group is normally a 16-bit hex value (1 group = 2 bytes), but a group
+	// containing dots is an embedded IPv4 dotted-quad and expands to 2 groups.
+	const parseGroup = (g: string): number[] | null => {
+		if (g.includes(".")) {
+			const octets = g.split(".").map(Number);
+			if (octets.length !== 4 || octets.some((o) => Number.isNaN(o) || o < 0 || o > 255)) return null;
+			return [(octets[0]! << 8) | octets[1]!, (octets[2]! << 8) | octets[3]!];
+		}
+		const value = parseInt(g, 16);
+		if (Number.isNaN(value) || value < 0 || value > 0xffff) return null;
+		return [value];
+	};
+
+	const parseSide = (groups: string[]): number[] | null => {
+		const out: number[] = [];
+		for (const g of groups) {
+			const vals = parseGroup(g);
+			if (vals === null) return null;
+			out.push(...vals);
+		}
+		return out;
+	};
+
+	const headGroups = parseSide(head);
+	const tailGroups = parseSide(tail);
+	if (headGroups === null || tailGroups === null) return null;
+
+	const missing = 8 - headGroups.length - tailGroups.length;
 	if (missing < 0) return null;
-	if (parts.length === 1 && head.length !== 8) return null;
-	const groups = [...head, ...Array<number>(parts.length === 2 ? missing : 0).fill(0), ...tail];
+	if (parts.length === 1 && headGroups.length !== 8) return null;
+	const groups = [...headGroups, ...Array<number>(parts.length === 2 ? missing : 0).fill(0), ...tailGroups];
 	if (groups.length !== 8) return null;
 	const bytes: number[] = [];
 	for (const group of groups) {
-		const value = parseInt(String(group), 16);
-		if (Number.isNaN(value) || value < 0 || value > 0xffff) return null;
-		bytes.push(value >> 8, value & 0xff);
+		bytes.push(group >> 8, group & 0xff);
 	}
 	return bytes;
 }
 
 function isPrivateIPv6(ip: string): boolean {
 	const bytes = ipv6ToBytes(ip);
-	if (!bytes) return false; // unparseable; let the OS/fetch reject it
+	if (!bytes) return true; // fail closed: unparseable literals must not pass the guard
 	if (bytes.every((b) => b === 0)) return true; // ::
 	if (bytes.slice(0, 15).every((b) => b === 0) && bytes[15] === 1) return true; // ::1
 	if (bytes[0] === 0xfe && (bytes[1]! & 0xc0) === 0x80) return true; // fe80::/10 link-local
@@ -87,7 +122,7 @@ function isPrivateIPv6(ip: string): boolean {
 	return false;
 }
 
-function isPrivateAddress(ip: string): boolean {
+export function isPrivateAddress(ip: string): boolean {
 	const bare = ip.replace(/^\[|\]$/g, "");
 	const family = isIP(bare);
 	if (family === 4) return isPrivateIPv4(bare);
@@ -154,6 +189,43 @@ async function safeFetch(url: string): Promise<Response> {
 	throw new Error(`too many redirects fetching ${url}`);
 }
 
+/**
+ * Drain a response body with a hard byte cap. Rejects up-front when
+ * Content-Length exceeds the cap and stops mid-stream once the cap is hit, so
+ * an attacker-controlled multi-GB page can neither OOM the process nor fill
+ * the state disk. Returns the bytes read and whether the cap was hit.
+ */
+export async function readBodyLimited(res: Response): Promise<{ buf: Buffer; truncated: boolean }> {
+	const declared = res.headers.get("content-length");
+	if (declared) {
+		const n = Number(declared);
+		if (Number.isFinite(n) && n > MAX_BODY_BYTES) {
+			await res.body?.cancel();
+			throw new Error(`response too large: ${n} bytes (limit ${MAX_BODY_BYTES})`);
+		}
+	}
+	const body = res.body;
+	if (!body) return { buf: Buffer.alloc(0), truncated: false };
+	const reader = body.getReader();
+	const chunks: Uint8Array[] = [];
+	let size = 0;
+	try {
+		while (true) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			size += value.length;
+			if (size > MAX_BODY_BYTES) {
+				await reader.cancel(); // stop draining the socket once the cap is hit
+				return { buf: Buffer.concat(chunks), truncated: true };
+			}
+			chunks.push(value);
+		}
+	} finally {
+		reader.releaseLock();
+	}
+	return { buf: Buffer.concat(chunks), truncated: false };
+}
+
 function htmlToText(html: string): string {
 	return html
 		.replace(/<script[\s\S]*?<\/script>/gi, "")
@@ -185,7 +257,8 @@ async function webSearch(query: string): Promise<SearchResult[]> {
 		headers: { "content-type": "application/x-www-form-urlencoded", "user-agent": UA },
 		body: new URLSearchParams({ q: query }),
 	});
-	const html = await res.text();
+	const { buf } = await readBodyLimited(res);
+	const html = buf.toString("utf8");
 	const results: SearchResult[] = [];
 	const linkRe = /<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g;
 	const snippetRe = /class="result__snippet"[^>]*>([\s\S]*?)<\/a>/g;
@@ -230,12 +303,35 @@ export function webTools(onAccess?: () => void): ToolDefinition[] {
 		name: "fetchpage",
 		label: "Fetch page",
 		description:
-			`Fetch a web page and return its readable text (first ${FETCH_CHAR_LIMIT} characters). Longer pages are saved to disk; the tool result is capped so the conversation stays small.`,
+			`Fetch a web page and return its readable text (first ${FETCH_CHAR_LIMIT} characters). Longer pages are saved to disk (capped at ${MAX_BODY_BYTES} bytes); the tool result is capped so the conversation stays small.`,
 		parameters: Type.Object({
 			url: Type.String({ description: "Page URL" }),
 		}),
 		async execute(_id, params) {
 			onAccess?.(); // taint the session: web content is untrusted
+			// Exfiltration guard: a URL query string is the channel a prompt-injected
+			// page would use to smuggle data to a public server (?<secret>=<data>).
+			// fetchpage exists to read a page's content, not to emit parameters, so
+			// refuse query-bearing URLs outright. websearch posts its query in the
+			// request body, so search is unaffected; and the session's built-in read
+			// tool is excluded (src/session.ts) so the model has no secret source to
+			// leak in the first place. A user-supplied page URL with parameters is
+			// still reachable via the base URL (and redirects are re-validated).
+			try {
+				if (new URL(params.url).search) {
+					return {
+						content: [
+							{
+								type: "text" as const,
+								text: `Refused to fetch ${params.url}: URL carries query parameters (${new URL(params.url).search}), which a page could use to smuggle data to a remote server. Fetch the base URL, or ask the user to approve the full URL.`,
+							},
+						],
+						details: undefined,
+					};
+				}
+			} catch {
+				// not a valid URL — let safeFetch give the canonical error below
+			}
 			let res: Response;
 			try {
 				res = await safeFetch(params.url);
@@ -244,8 +340,9 @@ export function webTools(onAccess?: () => void): ToolDefinition[] {
 				return { content: [{ type: "text" as const, text: `Cannot fetch ${params.url}: ${reason}` }], details: undefined };
 			}
 			if (!res.ok) return { content: [{ type: "text" as const, text: `HTTP ${res.status} fetching ${params.url}` }], details: undefined };
-			const text = htmlToText(await res.text());
-			if (text.length <= FETCH_CHAR_LIMIT) {
+			const { buf, truncated } = await readBodyLimited(res);
+			const text = htmlToText(buf.toString("utf8"));
+			if (!truncated && text.length <= FETCH_CHAR_LIMIT) {
 				return { content: [{ type: "text" as const, text }], details: undefined };
 			}
 			// Only persist pages that exceed the inline limit; short fetches never touch disk.
@@ -254,8 +351,13 @@ export function webTools(onAccess?: () => void): ToolDefinition[] {
 			const slug = params.url.replace(/[^a-z0-9]+/gi, "-").slice(0, 80);
 			const path = join(researchDir, `${slug}.txt`);
 			writeFileSync(path, text, { mode: 0o600 });
+			const note = truncated
+				? `\n\n[body exceeded ${MAX_BODY_BYTES} bytes; saved truncated text to ${path}]`
+				: text.length > FETCH_CHAR_LIMIT
+					? `\n\n[truncated; full text: ${path}]`
+					: "";
 			return {
-				content: [{ type: "text" as const, text: `${text.slice(0, FETCH_CHAR_LIMIT)}\n\n[truncated; full text: ${path}]` }],
+				content: [{ type: "text" as const, text: `${text.slice(0, FETCH_CHAR_LIMIT)}${note}` }],
 				details: undefined,
 			};
 		},
