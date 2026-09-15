@@ -5,82 +5,40 @@
 
 import { fetch, FormData as undiciFormData } from "undici";
 import { toTelegramHtml } from "./format.js";
+import { retry, sleep } from "./net.js";
+import { chunkText, type ChatMessage, type ChatRef, type Platform } from "./platform.js";
 
 const API = "https://api.telegram.org/bot";
 
-// Transient network failures are routine here (ECONNRESET on a reused keep-alive
-// socket, laptop suspend/wifi churn, DNS blips). A single blip must not become a
-// user-visible "Error: TypeError: fetch failed", so every Bot API call is retried.
-const RETRYABLE_CODES = new Set([
-	"ECONNRESET",
-	"ECONNREFUSED",
-	"EPIPE",
-	"ETIMEDOUT",
-	"EAI_AGAIN",
-	"ENOTFOUND",
-	"ENETUNREACH",
-	"EHOSTUNREACH",
-	"UND_ERR_CONNECT_TIMEOUT",
-	"UND_ERR_SOCKET",
-	"UND_ERR_CLOSED",
-	"UND_ERR_HEADERS_TIMEOUT",
-	"UND_ERR_BODY_TIMEOUT",
-]);
+interface TgMessage {
+	message_id: number;
+	from?: { id: number; first_name?: string; username?: string };
+	chat: { id: number; type?: string };
+	text?: string;
+	voice?: { file_id: string };
+	date?: number;
+}
 
-/** Walk the error/cause chain for a transport error code (undici nests causes). */
-function errorCode(err: unknown): string | undefined {
+/** Deepest error in undici's nested err.cause chain — the outer
+ * "TypeError: fetch failed" says nothing, the real reason sits in the cause. */
+export function deepestCause(err: unknown): unknown {
 	let e = err;
 	for (let i = 0; e && i < 6; i++) {
-		const code = (e as { code?: unknown }).code;
-		if (typeof code === "string") return code;
-		e = (e as { cause?: unknown }).cause;
+		const next = (e as { cause?: unknown }).cause;
+		if (next === undefined) return e;
+		e = next;
 	}
-	return undefined;
+	return e;
 }
 
-function isTransient(err: unknown): boolean {
-	const code = errorCode(err);
-	if (code && RETRYABLE_CODES.has(code)) return true;
-	const status = (err as { errorCode?: number; status?: number } | undefined)?.errorCode
-		?? (err as { status?: number } | undefined)?.status;
-	if (status === 429 || (status !== undefined && status >= 500)) return true;
-	return err instanceof TypeError && /fetch failed|terminated|other side closed|socket hang up/i.test(err.message);
-}
-
-function sleep(ms: number, signal?: AbortSignal): Promise<void> {
-	return new Promise((resolve) => {
-		if (signal?.aborted) return resolve();
-		const t = setTimeout(resolve, ms);
-		signal?.addEventListener("abort", () => { clearTimeout(t); resolve(); }, { once: true });
-	});
-}
-
-/** Retry a network operation on transient failures with backoff. Honors an
- * AbortSignal (shutdown) and Telegram's `retry_after` on 429. */
-async function retry<T>(label: string, fn: () => Promise<T>, signal?: AbortSignal, attempts = 4): Promise<T> {
-	let last: unknown;
-	for (let attempt = 0; attempt < attempts; attempt++) {
-		try {
-			return await fn();
-		} catch (err) {
-			last = err;
-			if (signal?.aborted || !isTransient(err) || attempt === attempts - 1) throw err;
-			const retryAfter = (err as { retryAfter?: number }).retryAfter;
-			const delay = (retryAfter ? retryAfter * 1000 : 400 * 2 ** attempt) + Math.random() * 200;
-			console.warn(`${label}: transient network error (${errorCode(err) ?? "unknown"}), retrying in ${Math.round(delay)}ms`);
-			await sleep(delay, signal);
-		}
-	}
-	throw last;
-}
+// errorCode (and the retry/sleep helpers) live in net.js, shared by every
+// chat-platform transport; re-export here so index.ts can keep importing it
+// from telegram.js alongside deepestCause.
+export { errorCode } from "./net.js";
 
 interface TgUpdate {
-	message?: {
-		chat: { id: number };
-		text?: string;
-		voice?: { file_id: string };
-		chat_type?: string;
-	};
+	update_id: number;
+	message?: TgMessage;
 }
 
 async function tg(token: string, method: string, body: unknown, signal?: AbortSignal): Promise<unknown> {
@@ -111,35 +69,6 @@ async function tg(token: string, method: string, body: unknown, signal?: AbortSi
 	}, signal);
 }
 
-export async function sendMessage(token: string, chatId: number, text: string): Promise<number> {
-	// Telegram caps messages at 4096 chars. Chunk the RAW markdown first, then
-	// convert each chunk: splitting HTML can cut mid-tag and Telegram 400s it.
-	let lastId = 0;
-	for (let i = 0; i < text.length; i += 3800) {
-		const html = toTelegramHtml(text.slice(i, i + 3800));
-		const result = (await tg(token, "sendMessage", {
-			chat_id: chatId,
-			text: html,
-			parse_mode: "HTML",
-			link_preview_options: { is_disabled: true },
-		})) as { message_id: number };
-		lastId = result.message_id;
-	}
-	return lastId;
-}
-
-export async function sendVoice(token: string, chatId: number, wav: Buffer): Promise<void> {
-	// Rebuild the FormData inside the retry: a consumed body cannot be replayed.
-	await retry("telegram sendVoice", async () => {
-		const form = new undiciFormData();
-		form.set("chat_id", String(chatId));
-		form.set("voice", new Blob([new Uint8Array(wav)], { type: "audio/ogg" }), "reply.ogg");
-		const res = await fetch(`${API}${token}/sendVoice`, { method: "POST", body: form });
-		const json = (await res.json()) as { ok: boolean; description?: string };
-		if (!json.ok) throw new Error(`telegram sendVoice: ${json.description}`);
-	});
-}
-
 /** Register the bot's slash-command menu (Telegram's popup list). Cosmetic; ignore failures. */
 export async function setMyCommands(
 	token: string,
@@ -152,85 +81,121 @@ export async function setMyCommands(
 	}
 }
 
-/** Show the typing indicator; Telegram expires it after ~5s, so call periodically. */
-export async function sendTyping(token: string, chatId: number): Promise<void> {
-	try {
-		await tg(token, "sendChatAction", { chat_id: chatId, action: "typing" });
-	} catch {
-		// cosmetic; ignore failures
-	}
-}
-
-export async function deleteMessage(token: string, chatId: number, messageId: number): Promise<void> {
-	try {
-		await tg(token, "deleteMessage", { chat_id: chatId, message_id: messageId });
-	} catch {
-		// cosmetic; ignore failures
-	}
-}
-
-/** Download a voice message's audio (OGG/Opus) by file_id. */
-export async function getVoice(token: string, fileId: string): Promise<Buffer> {
-	const file = (await tg(token, "getFile", { file_id: fileId })) as { file_path?: string };
-	if (!file.file_path) throw new Error("telegram getFile: no file_path");
-	return retry("telegram file download", async () => {
-		const res = await fetch(`https://api.telegram.org/file/bot${token}/${file.file_path}`);
-		if (!res.ok) throw new Error(`telegram file download: ${res.status}`);
-		return Buffer.from(await res.arrayBuffer());
-	});
-}
-
-/** Long-poll updates. Yields { chatId, text?, voiceFileId? } per message. */
-export async function* pollMessages(
-	token: string,
-	allowedChatIds: number[],
-	signal: AbortSignal,
-): AsyncGenerator<{ chatId: number; text?: string; voiceFileId?: string }> {
-	// Fail closed: an empty allow-list must never be treated as "allow all".
-	if (allowedChatIds.length === 0) {
-		throw new Error("allowedChatIds is empty; refusing to poll Telegram");
-	}
-	let offset = 0;
-	// Ignore updates older than startup: Telegram redelivers unconfirmed
-	// updates after a restart, which would re-run old turns after a crash.
-	const startedAt = Math.floor(Date.now() / 1000) - 60;
-	// Telegram redelivers an update when a long-poll response is lost
-	// (flaky connections), and clients double-send messages; without a dedup
-	// each copy runs a full turn and sends a duplicate reply. A redelivered
-	// update has an identical chatId:date:text fingerprint, so a single
-	// fingerprint set suffices — no separate update_id dedup needed.
-	const seenMsgs = new Map<string, true>(); // chatId:date:fingerprint → recent
-	const remember = (key: string): boolean => {
-		if (seenMsgs.has(key)) return false;
-		seenMsgs.set(key, true);
-		if (seenMsgs.size > 500) seenMsgs.delete(seenMsgs.keys().next().value!);
-		return true;
-	};
-	while (!signal.aborted) {
-		try {
-			const updates = (await tg(token, "getUpdates", {
-				offset,
-				timeout: 50,
-				allowed_updates: ["message"],
-			}, signal)) as TgUpdate[];
-			for (const u of updates ?? []) {
-				const updateId = (u as { update_id: number }).update_id;
-				// Confirm every update exactly once, even ones we skip — otherwise a
-				// lone photo/sticker re-pollutes every subsequent getUpdates response.
-				offset = Math.max(offset, updateId + 1);
-				const msg = u.message;
-				if (!msg?.text && !msg?.voice) continue;
-				if (!allowedChatIds.includes(msg.chat.id)) continue;
-				const date = (msg as { date?: number }).date;
-				if (date !== undefined && date < startedAt) continue;
-				const fp = `${msg.chat.id}:${date}:${msg.text ?? `voice:${msg.voice!.file_id.slice(0, 20)}`}`;
-				if (!remember(fp)) continue;
-				yield { chatId: msg.chat.id, text: msg.text, voiceFileId: msg.voice?.file_id };
+/** Telegram platform. Voice is Telegram-only: incoming voice notes are fetched
+ * by file_id and replies can be sent as OGG/Opus voice notes. */
+export function createTelegramPlatform(token: string, allowedChatIds: string[]): Platform {
+	const allowed = new Set(allowedChatIds.map(String));
+	return {
+		id: "telegram",
+		name: "Telegram",
+		async *poll(signal): AsyncGenerator<ChatMessage> {
+			// Fail closed: an empty allow-list must never be treated as "allow all".
+			if (allowed.size === 0) {
+				throw new Error("allowedChatIds is empty; refusing to poll Telegram");
 			}
-		} catch (err) {
-			if (signal.aborted) return;
-			console.error("telegram poll error:", err);
-			await new Promise((r) => setTimeout(r, 3000));
-		}
-	}
+			let offset = 0;
+			// Ignore updates older than startup: Telegram redelivers unconfirmed
+			// updates after a restart, which would re-run old turns after a crash.
+			const startedAt = Math.floor(Date.now() / 1000) - 60;
+			// Telegram redelivers an update when a long-poll response is lost
+			// (flaky connections), and clients double-send messages; without a dedup
+			// each copy runs a full turn and sends a duplicate reply. A redelivered
+			// update has an identical chatId:date:text fingerprint, so a single
+			// fingerprint set suffices — no separate update_id dedup needed.
+			const seenMsgs = new Map<string, true>(); // chatId:date:fingerprint → recent
+			const remember = (key: string): boolean => {
+				if (seenMsgs.has(key)) return false;
+				seenMsgs.set(key, true);
+				if (seenMsgs.size > 500) seenMsgs.delete(seenMsgs.keys().next().value!);
+				return true;
+			};
+			while (!signal.aborted) {
+				try {
+					const updates = (await tg(token, "getUpdates", {
+						offset,
+						timeout: 50,
+						allowed_updates: ["message"],
+					}, signal)) as TgUpdate[];
+					for (const u of updates ?? []) {
+						// Confirm every update exactly once, even ones we skip — otherwise a
+						// lone photo/sticker re-pollutes every subsequent getUpdates response.
+						offset = Math.max(offset, u.update_id + 1);
+						const msg = u.message;
+						if (!msg?.from) continue;
+						if (!msg.text && !msg.voice) continue;
+						const chatId = String(msg.chat.id);
+						if (!allowed.has(chatId)) continue;
+						const date = msg.date;
+						if (date !== undefined && date < startedAt) continue;
+						const fp = `${chatId}:${date}:${msg.text ?? `voice:${msg.voice!.file_id.slice(0, 20)}`}`;
+						if (!remember(fp)) continue;
+						yield {
+							ref: { platform: "telegram", chatId },
+							userId: String(msg.from.id),
+							userName: msg.from.first_name ?? msg.from.username,
+							text: msg.text,
+							voiceFileId: msg.voice?.file_id,
+							direct: msg.chat.type === "private",
+						};
+					}
+				} catch (err) {
+					if (signal.aborted) return;
+					console.error("telegram poll error:", err);
+					await sleep(3000, signal);
+				}
+			}
+		},
+		async sendText(ref: ChatRef, text: string): Promise<string | undefined> {
+			const chatId = Number(ref.chatId);
+			// Telegram caps messages at 4096 chars. Chunk the RAW markdown first,
+			// then convert each chunk: splitting HTML can cut mid-tag and 400s it.
+			let lastId: string | undefined;
+			for (const chunk of chunkText(text, 3800)) {
+				const html = toTelegramHtml(chunk);
+				const result = (await tg(token, "sendMessage", {
+					chat_id: chatId,
+					text: html,
+					parse_mode: "HTML",
+					link_preview_options: { is_disabled: true },
+				})) as { message_id: number };
+				lastId = String(result.message_id);
+			}
+			return lastId;
+		},
+		async sendVoice(ref: ChatRef, wav: Buffer): Promise<void> {
+			const chatId = Number(ref.chatId);
+			// Rebuild the FormData inside the retry: a consumed body cannot be replayed.
+			await retry("telegram sendVoice", async () => {
+				const form = new undiciFormData();
+				form.set("chat_id", String(chatId));
+				form.set("voice", new Blob([new Uint8Array(wav)], { type: "audio/ogg" }), "reply.ogg");
+				const res = await fetch(`${API}${token}/sendVoice`, { method: "POST", body: form });
+				const json = (await res.json()) as { ok: boolean; description?: string };
+				if (!json.ok) throw new Error(`telegram sendVoice: ${json.description}`);
+			});
+		},
+		async sendTyping(ref: ChatRef): Promise<void> {
+			try {
+				await tg(token, "sendChatAction", { chat_id: Number(ref.chatId), action: "typing" });
+			} catch {
+				// cosmetic; ignore failures
+			}
+		},
+		async deleteMessage(ref: ChatRef, messageId: string): Promise<void> {
+			try {
+				await tg(token, "deleteMessage", { chat_id: Number(ref.chatId), message_id: Number(messageId) });
+			} catch {
+				// cosmetic; ignore failures
+			}
+		},
+		async getVoice(fileId: string): Promise<Buffer> {
+			const file = (await tg(token, "getFile", { file_id: fileId })) as { file_path?: string };
+			if (!file.file_path) throw new Error("telegram getFile: no file_path");
+			return retry("telegram file download", async () => {
+				const res = await fetch(`https://api.telegram.org/file/bot${token}/${file.file_path}`);
+				if (!res.ok) throw new Error(`telegram file download: ${res.status}`);
+				return Buffer.from(await res.arrayBuffer());
+			});
+		},
+	};
 }

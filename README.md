@@ -5,7 +5,15 @@ scheduled tasks, web research, and local voice — built entirely on pi's SDK, n
 
 ## What it does
 
-- **Telegram chat**: each chat gets its own persistent pi session (full agent: files, bash, skills).
+- **Multi-platform chat**: Telegram (long-poll), Slack (Socket Mode), Discord (gateway websocket),
+  and Matrix (client-server sync) — each chat gets its own persistent pi session (full agent: files,
+  bash, skills). Configure whichever platforms you need in `~/.pi-gateway/config.json`; each has its
+  own fail-closed allow-list.
+- **Identity linking**: the same authorized user can bridge chats across platforms with `/link`. In a
+  1:1 DM, `/link` shows a one-time 6-char code; run `/link <code>` in the other 1:1 chat you want to
+  join (either direction works). No passwords in plain text — the code proves access to both chats.
+  Linked chats share one memory file and recall only searches that identity's logs, never anyone
+  else's. `/whoami` shows the linked identity. Linking is restricted to 1:1 DMs only, never group chats.
 - **Scheduled tasks**: schedules are just `{name, every|at, chatId, prompt}` records in
   `~/.pi-gateway/schedules.json` — the gateway runs a headless pi turn on a timer and delivers the
   result to the chat. No job types, no DSL.
@@ -18,8 +26,10 @@ scheduled tasks, web research, and local voice — built entirely on pi's SDK, n
 - **Memory & recall**: durable user facts live in a capped `MEMORY.md`, injected as session messages (never into the system prompt). The `recall` tool is full-text search (SQLite FTS5, incrementally indexed) over all persisted session logs, with a one-shot LLM summary of the hits — Hermes-style cross-session recall, also delivered as a tool result.
 - **`/plan <idea>`**: one-shot spec writer — numbered build plan with file paths and acceptance criteria.
 - **Chat commands**: `/new` (fresh session), `/model [provider/id]` (list or switch models),
-  `/stop` (interrupt a running turn), `/plan` — all registered in Telegram's slash-command menu.
-  Sending any new message also interrupts a running turn (Hermes-style interrupt-and-redirect).
+  `/stop` (interrupt a running turn), `/link [code]` (identity bridging across platforms),
+  `/whoami` (show the linked identity), `/plan` — registered in Telegram's slash-command menu
+  (and typed directly on every other platform). Sending any new message also interrupts a running
+  turn (Hermes-style interrupt-and-redirect).
 - **Voice**: replies as Telegram voice notes via local `piper` (+ ffmpeg for OGG/Opus). Incoming
   voice notes are transcribed locally via whisper.cpp (set `"whisperModel": "/path/to/ggml-model.bin"`
   in the config; needs a `whisper-cli`/`whisper` binary and ffmpeg on PATH).
@@ -43,6 +53,15 @@ cat > ~/.pi-gateway/config.json <<'EOF'
 {
   "telegramBotToken": "123:ABC",
   "allowedChatIds": [123456789],
+  "slackBotToken": "xoxb-…",
+  "slackAppToken": "xapp-…",
+  "allowedSlackChatIds": ["C0123ABC"],
+  "discordBotToken": "…",
+  "allowedDiscordChatIds": ["123456789"],
+  "matrixHomeserver": "https://matrix.example.org",
+  "matrixUserId": "@gaia:example.org",
+  "matrixAccessToken": "…",
+  "allowedMatrixRoomIds": ["!room:example.org"],
   "model": { "provider": "lmstudio", "id": "qwen3-32b" },
   "piperVoice": "/opt/piper/voices/en_US-lessac-medium.onnx"
 }
@@ -55,6 +74,12 @@ cat > ~/.pi-gateway/schedules.json <<'EOF'
 EOF
 npm start
 ```
+
+Any single platform is enough — omit the others. Every configured platform needs its
+allow-list populated (a chat id / channel id / room id per platform) or the gateway
+refuses to start; Slack needs both a bot token (`xoxb-…`) and a socket-mode app token
+(`xapp-…`). Schedules take an optional `"platform": "telegram" | "slack" | "discord" | "matrix"`
+(default `telegram`).
 
 Model is optional — omit it and pi's default resolution applies (local providers like LM Studio,
 Ollama, vLLM, llama.cpp are built in; see pi's providers doc).
@@ -89,5 +114,5 @@ The design targets 32K-token local models:
 
 ## Not built (deliberately)
 
-Skill packs, user modeling, multiple chat platforms, job DSLs, account integrations beyond
+Skill packs, user modeling, job DSLs, account integrations beyond
 MCP servers (use `pi-mcp-adapter` with community Google/M365 MCP servers).
