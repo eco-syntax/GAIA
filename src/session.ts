@@ -67,11 +67,21 @@ function resolveConfiguredModel(
 			: `Configured model ${spec.provider}/${spec.id} not found — using pi's default model`,
 	};
 }
+let sharedRuntime: ModelRuntime | undefined;
+/** Lazily create and reuse one runtime so the model-catalog network fetch and
+ * model resolution happen once per process, not per invocation. */
+async function getModelRuntime(): Promise<ModelRuntime> {
+	// Without allowModelNetwork the catalog refresh skips fetchModels entirely,
+	// local catalogs stay empty, and the session falls back to provider "unknown".
+	if (!sharedRuntime) sharedRuntime = await ModelRuntime.create({ allowModelNetwork: true });
+	return sharedRuntime;
+}
 
 /** Resolve the configured model in one step, shared by ChatSessions and
- * runOneShot. Pass an existing runtime to reuse it (ChatSessions caches one). */
+ * runOneShot. Pass an existing runtime to reuse it; otherwise the shared
+ * module-level runtime (created once per process) is used. */
 async function resolveModel(config: Config, modelRuntime?: ModelRuntime) {
-	const runtime = modelRuntime ?? (await ModelRuntime.create({ allowModelNetwork: true }));
+	const runtime = modelRuntime ?? (await getModelRuntime());
 	const { model, warning } = resolveConfiguredModel(runtime, config.model);
 	return { modelRuntime: runtime, model, warning };
 }
@@ -83,15 +93,11 @@ export class ChatSessions {
 	 * poll loop; without this, two creations for the same chat would race and the
 	 * loser would write interleaved history to the same log. */
 	private pending = new Map<string, Promise<AgentSession>>();
-	private modelRuntime: ModelRuntime | undefined;
 	private warnings = new Map<string, string>();
 	constructor(private config: Config) {}
 
 	private async runtime(): Promise<ModelRuntime> {
-		// Without allowModelNetwork the catalog refresh skips fetchModels entirely,
-		// local catalogs stay empty, and the session falls back to provider "unknown".
-		if (!this.modelRuntime) this.modelRuntime = await ModelRuntime.create({ allowModelNetwork: true });
-		return this.modelRuntime;
+		return getModelRuntime();
 	}
 
 	async get(ref: ChatRef): Promise<AgentSession> {

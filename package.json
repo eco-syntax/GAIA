@@ -5,14 +5,13 @@
 	"private": true,
 	"scripts": {
 		"start": "tsx src/index.ts",
-		"test": "tsx tests/recall-check.ts && tsx tests/security-check.ts && tsx tests/format-check.ts"
+		"test": "tsx tests/recall-check.ts && tsx tests/web-check.ts && tsx tests/security-check.ts && tsx tests/format-check.ts"
 	},
 	"engines": {
 		"node": ">=22"
 	},
 	"dependencies": {
 		"@earendil-works/pi-coding-agent": "file:/home/colby/.greenpi/tarballs/earendil-works-pi-coding-agent-0.85.2.tgz",
-		"@earendil-works/pi-server": "file:/home/colby/.greenpi/tarballs/earendil-works-pi-server-0.85.2.tgz",
 		"@sinclair/typebox": "^0.34.52",
 		"undici": "^8.10.2"
 	},
