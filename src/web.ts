@@ -48,29 +48,62 @@ function isPrivateIPv4(ip: string): boolean {
 	);
 }
 
-/** Expand an IPv6 literal to its 16 bytes (without a zone id). */
+/**
+ * Expand an IPv6 literal to its 16 bytes (without a zone id). Handles the two
+ * spellings of an embedded IPv4 address: the dotted-quad form (e.g.
+ * `0:0:0:0:0:ffff:127.0.0.1`, a 7-group literal where the last group is four
+ * octets) as well as the explicit hex form (`::ffff:7f00:1`). A dotted-quad
+ * group is split into its four octets (2 bytes each), not `parseInt(group, 16)`,
+ * which would misread it.
+ */
 function ipv6ToBytes(ip: string): number[] | null {
 	const parts = ip.split("%")[0]!.split("::");
 	if (parts.length > 2) return null;
 	const head = parts[0] ? parts[0].split(":") : [];
 	const tail = parts.length === 2 && parts[1] ? parts[1].split(":") : [];
-	const missing = 8 - head.length - tail.length;
+
+	// A group is normally a 16-bit hex value (1 group = 2 bytes), but a group
+	// containing dots is an embedded IPv4 dotted-quad and expands to 2 groups.
+	const parseGroup = (g: string): number[] | null => {
+		if (g.includes(".")) {
+			const octets = g.split(".").map(Number);
+			if (octets.length !== 4 || octets.some((o) => Number.isNaN(o) || o < 0 || o > 255)) return null;
+			return [(octets[0]! << 8) | octets[1]!, (octets[2]! << 8) | octets[3]!];
+		}
+		const value = parseInt(g, 16);
+		if (Number.isNaN(value) || value < 0 || value > 0xffff) return null;
+		return [value];
+	};
+
+	const parseSide = (groups: string[]): number[] | null => {
+		const out: number[] = [];
+		for (const g of groups) {
+			const vals = parseGroup(g);
+			if (vals === null) return null;
+			out.push(...vals);
+		}
+		return out;
+	};
+
+	const headGroups = parseSide(head);
+	const tailGroups = parseSide(tail);
+	if (headGroups === null || tailGroups === null) return null;
+
+	const missing = 8 - headGroups.length - tailGroups.length;
 	if (missing < 0) return null;
-	if (parts.length === 1 && head.length !== 8) return null;
-	const groups = [...head, ...Array<number>(parts.length === 2 ? missing : 0).fill(0), ...tail];
+	if (parts.length === 1 && headGroups.length !== 8) return null;
+	const groups = [...headGroups, ...Array<number>(parts.length === 2 ? missing : 0).fill(0), ...tailGroups];
 	if (groups.length !== 8) return null;
 	const bytes: number[] = [];
 	for (const group of groups) {
-		const value = parseInt(String(group), 16);
-		if (Number.isNaN(value) || value < 0 || value > 0xffff) return null;
-		bytes.push(value >> 8, value & 0xff);
+		bytes.push(group >> 8, group & 0xff);
 	}
 	return bytes;
 }
 
 function isPrivateIPv6(ip: string): boolean {
 	const bytes = ipv6ToBytes(ip);
-	if (!bytes) return false; // unparseable; let the OS/fetch reject it
+	if (!bytes) return true; // fail closed: unparseable literals must not pass the guard
 	if (bytes.every((b) => b === 0)) return true; // ::
 	if (bytes.slice(0, 15).every((b) => b === 0) && bytes[15] === 1) return true; // ::1
 	if (bytes[0] === 0xfe && (bytes[1]! & 0xc0) === 0x80) return true; // fe80::/10 link-local
@@ -87,7 +120,7 @@ function isPrivateIPv6(ip: string): boolean {
 	return false;
 }
 
-function isPrivateAddress(ip: string): boolean {
+export function isPrivateAddress(ip: string): boolean {
 	const bare = ip.replace(/^\[|\]$/g, "");
 	const family = isIP(bare);
 	if (family === 4) return isPrivateIPv4(bare);
