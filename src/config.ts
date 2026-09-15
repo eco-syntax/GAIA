@@ -143,20 +143,12 @@ function updateConfigFile(mutate: (raw: Config) => void): void {
 }
 
 export const stateDir = STATE_DIR;
+export const researchDir = join(STATE_DIR, "research");
 
 /** Set the default model: update the in-memory config AND persist it. */
 export function setModel(config: Config, model: Config["model"]): void {
 	config.model = model;
 	updateConfigFile((raw) => {
 		raw.model = model;
-	});
-}
-
-/** Add a bash allowlist pattern: update the in-memory config AND persist it. */
-export function addAllowedCommand(config: Config, pattern: string): void {
-	config.allowedCommands = [...(config.allowedCommands ?? [])];
-	if (!config.allowedCommands.includes(pattern)) config.allowedCommands.push(pattern);
-	updateConfigFile((raw) => {
-		raw.allowedCommands = config.allowedCommands;
 	});
 }
