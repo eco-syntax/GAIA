@@ -1,5 +1,5 @@
 import { execFile, spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -40,8 +40,7 @@ export function ttsAvailable(voicePath: string): boolean {
 	try {
 		const r = spawnSync("piper", ["--version"], { stdio: "ignore" });
 		if (r.error) throw r.error;
-		const dir = voicePath.replace(/[/\\][^/\\]+$/, "");
-		return readdirSync(dir).length > 0;
+		return existsSync(voicePath);
 	} catch {
 		return false;
 	}

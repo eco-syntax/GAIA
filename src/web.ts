@@ -7,7 +7,7 @@ import dns from "node:dns";
 import { BlockList, isIP } from "node:net";
 import type { LookupFunction } from "node:net";
 import { join } from "node:path";
-import { researchDir } from "./config.js";
+import { stateDir } from "./config.js";
 
 // ============================================================================
 // Hermes-style web search + fetch: one tool, zero user configuration.
@@ -18,6 +18,10 @@ import { researchDir } from "./config.js";
 
 const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131 Safari/537.36";
 const FETCH_CHAR_LIMIT = 20_000;
+/** Where truncated fetchpage results are saved so the model can read the full text. */
+const researchDir = join(stateDir, "research");
+/** Hard cap on any buffered/persisted response body (memory + research dir). */
+export const MAX_BODY_BYTES = 512 * 1024;
 const MAX_REDIRECTS = 5;
 
 // ============================================================================
@@ -73,7 +77,7 @@ function unwrapIPv4(ip: string): string | null {
 	return null;
 }
 
-function isPrivateAddress(ip: string): boolean {
+export function isPrivateAddress(ip: string): boolean {
 	const bare = ip.replace(/^\[|\]$/g, "");
 	const family = isIP(bare);
 	if (family === 4) return privateBlockList.check(bare, "ipv4");
@@ -144,6 +148,43 @@ async function safeFetch(url: string): Promise<Response> {
 	throw new Error(`too many redirects fetching ${url}`);
 }
 
+/**
+ * Drain a response body with a hard byte cap. Rejects up-front when
+ * Content-Length exceeds the cap and stops mid-stream once the cap is hit, so
+ * an attacker-controlled multi-GB page can neither OOM the process nor fill
+ * the state disk. Returns the bytes read and whether the cap was hit.
+ */
+export async function readBodyLimited(res: Response): Promise<{ buf: Buffer; truncated: boolean }> {
+	const declared = res.headers.get("content-length");
+	if (declared) {
+		const n = Number(declared);
+		if (Number.isFinite(n) && n > MAX_BODY_BYTES) {
+			await res.body?.cancel();
+			throw new Error(`response too large: ${n} bytes (limit ${MAX_BODY_BYTES})`);
+		}
+	}
+	const body = res.body;
+	if (!body) return { buf: Buffer.alloc(0), truncated: false };
+	const reader = body.getReader();
+	const chunks: Uint8Array[] = [];
+	let size = 0;
+	try {
+		while (true) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			size += value.length;
+			if (size > MAX_BODY_BYTES) {
+				await reader.cancel(); // stop draining the socket once the cap is hit
+				return { buf: Buffer.concat(chunks), truncated: true };
+			}
+			chunks.push(value);
+		}
+	} finally {
+		reader.releaseLock();
+	}
+	return { buf: Buffer.concat(chunks), truncated: false };
+}
+
 function htmlToText(html: string): string {
 	return html
 		.replace(/<script[\s\S]*?<\/script>/gi, "")
@@ -175,7 +216,8 @@ async function webSearch(query: string): Promise<SearchResult[]> {
 		headers: { "content-type": "application/x-www-form-urlencoded", "user-agent": UA },
 		body: new URLSearchParams({ q: query }),
 	});
-	const html = await res.text();
+	const { buf } = await readBodyLimited(res);
+	const html = buf.toString("utf8");
 	const results: SearchResult[] = [];
 	const linkRe = /<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g;
 	const snippetRe = /class="result__snippet"[^>]*>([\s\S]*?)<\/a>/g;
@@ -220,12 +262,35 @@ export function webTools(onAccess?: () => void): ToolDefinition[] {
 		name: "fetchpage",
 		label: "Fetch page",
 		description:
-			`Fetch a web page and return its readable text (first ${FETCH_CHAR_LIMIT} characters). Full text is saved to disk; the tool result is capped so the conversation stays small.`,
+			`Fetch a web page and return its readable text (first ${FETCH_CHAR_LIMIT} characters). Longer pages are saved to disk (capped at ${MAX_BODY_BYTES} bytes); the tool result is capped so the conversation stays small.`,
 		parameters: Type.Object({
 			url: Type.String({ description: "Page URL" }),
 		}),
 		async execute(_id, params) {
 			onAccess?.(); // taint the session: web content is untrusted
+			// Exfiltration guard: a URL query string is the channel a prompt-injected
+			// page would use to smuggle data to a public server (?<secret>=<data>).
+			// fetchpage exists to read a page's content, not to emit parameters, so
+			// refuse query-bearing URLs outright. websearch posts its query in the
+			// request body, so search is unaffected; and the session's built-in read
+			// tool is excluded (src/session.ts) so the model has no secret source to
+			// leak in the first place. A user-supplied page URL with parameters is
+			// still reachable via the base URL (and redirects are re-validated).
+			try {
+				if (new URL(params.url).search) {
+					return {
+						content: [
+							{
+								type: "text" as const,
+								text: `Refused to fetch ${params.url}: URL carries query parameters (${new URL(params.url).search}), which a page could use to smuggle data to a remote server. Fetch the base URL, or ask the user to approve the full URL.`,
+							},
+						],
+						details: undefined,
+					};
+				}
+			} catch {
+				// not a valid URL — let safeFetch give the canonical error below
+			}
 			let res: Response;
 			try {
 				res = await safeFetch(params.url);
@@ -234,21 +299,23 @@ export function webTools(onAccess?: () => void): ToolDefinition[] {
 				return { content: [{ type: "text" as const, text: `Cannot fetch ${params.url}: ${reason}` }], details: undefined };
 			}
 			if (!res.ok) return { content: [{ type: "text" as const, text: `HTTP ${res.status} fetching ${params.url}` }], details: undefined };
-			const text = htmlToText(await res.text());
+			const { buf, truncated } = await readBodyLimited(res);
+			const text = htmlToText(buf.toString("utf8"));
+			if (!truncated && text.length <= FETCH_CHAR_LIMIT) {
+				return { content: [{ type: "text" as const, text }], details: undefined };
+			}
+			// Only persist pages that exceed the inline limit; short fetches never touch disk.
 			mkdirSync(researchDir, { recursive: true });
 			const slug = params.url.replace(/[^a-z0-9]+/gi, "-").slice(0, 80);
 			const path = join(researchDir, `${slug}.txt`);
 			writeFileSync(path, text);
+			const note = truncated
+				? `\n\n[body exceeded ${MAX_BODY_BYTES} bytes; saved truncated text to ${path}]`
+				: text.length > FETCH_CHAR_LIMIT
+					? `\n\n[truncated; full text: ${path}]`
+					: "";
 			return {
-				content: [
-					{
-						type: "text" as const,
-						text:
-							text.length > FETCH_CHAR_LIMIT
-								? `${text.slice(0, FETCH_CHAR_LIMIT)}\n\n[truncated; full text: ${path}]`
-								: text,
-					},
-				],
+				content: [{ type: "text" as const, text: `${text.slice(0, FETCH_CHAR_LIMIT)}${note}` }],
 				details: undefined,
 			};
 		},
