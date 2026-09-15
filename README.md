@@ -33,10 +33,11 @@ scheduled tasks, web research, and local voice — built entirely on pi's SDK, n
 - **Voice**: replies as Telegram voice notes via local `piper` (+ ffmpeg for OGG/Opus). Incoming
   voice notes are transcribed locally via whisper.cpp (set `"whisperModel": "/path/to/ggml-model.bin"`
   in the config; needs a `whisper-cli`/`whisper` binary and ffmpeg on PATH).
-- **Bash allowlist**: the built-in bash tool is shadowed by a deny-by-default gate
-  (`src/security.ts`). Every shell segment (`&&`, `;`, `|` split) must match an
-  `"allowedCommands"` pattern (`"git *"`, `"npm test"`); anything else is refused and the agent
-  asks the user, who approves with `/allow <prefix>`. The systemd unit adds OS-level containment
+- **Bash approval gate**: the built-in bash tool is shadowed by a deny-by-default gate
+  (`src/security.ts`). There is no command allowlist — every bash command is
+  refused until you approve it for the current session with `/bash` (which shows
+  a security warning; `/bash off` re-locks it; `/new`/`/start` resets to locked).
+  The systemd unit adds OS-level containment
   (ProtectSystem/ProtectHome/PrivateTmp) as a second layer — see `docs/security-plan.md`.
 
 ## Setup
@@ -85,7 +86,7 @@ Ollama, vLLM, llama.cpp are built in; see pi's providers doc).
 ### Docker
 
 Runs as a non-root user with no access to host secrets; the only host path it
-touches is the `~/.pi-gateway` volume. Complements the bash allowlist gate and
+touches is the `~/.pi-gateway` volume. Complements the bash approval gate and
 the systemd unit's hardening (see `docs/security-plan.md`).
 
 ```bash
