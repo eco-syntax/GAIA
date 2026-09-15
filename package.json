@@ -5,7 +5,7 @@
 	"private": true,
 	"scripts": {
 		"start": "tsx src/index.ts",
-		"test": "tsx tests/recall-check.ts && tsx tests/security-check.ts && tsx tests/format-check.ts"
+		"test": "tsx tests/recall-check.ts && tsx tests/web-check.ts && tsx tests/security-check.ts && tsx tests/format-check.ts"
 	},
 	"engines": {
 		"node": ">=22"
