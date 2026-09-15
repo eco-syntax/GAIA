@@ -236,21 +236,27 @@ export function webTools(onAccess?: () => void): ToolDefinition[] {
 		}),
 		async execute(_id, params) {
 			onAccess?.(); // taint the session: web content is untrusted
-			// Exfiltration guard: a URL query string is the channel a prompt-injected
-			// page would use to smuggle data to a public server (?<secret>=<data>).
-			// fetchpage exists to read a page's content, not to emit parameters, so
-			// refuse query-bearing URLs outright. websearch posts its query in the
-			// request body, so search is unaffected; and the session's built-in read
-			// tool is excluded (src/session.ts) so the model has no secret source to
-			// leak in the first place. A user-supplied page URL with parameters is
-			// still reachable via the base URL (and redirects are re-validated).
+			// Exfiltration guard: a URL can smuggle data to a public server in the
+			// query string (?<secret>=<data>), in the path (https://a/<SECRET>), or
+			// in the fragment (#<SECRET>). fetchpage exists to read a page's content,
+			// not to emit parameters, so refuse any URL that is not a bare site
+			// origin — no path, no query, no fragment. websearch posts its query in
+			// the request body, so search is unaffected; and the session's built-in
+			// read tool is excluded (src/session.ts) so the model has no secret source
+			// to leak in the first place. A user-supplied page URL that isn't a bare
+			// origin is still reachable via the base URL (and redirects are
+			// re-validated).
 			try {
-				if (new URL(params.url).search) {
+				const parsed = new URL(params.url);
+				if (parsed.search || parsed.hash || parsed.pathname !== "/") {
+					const carrying =
+						parsed.search ||
+						(parsed.pathname !== "/" ? `path ${parsed.pathname}` : `fragment ${parsed.hash}`);
 					return {
 						content: [
 							{
 								type: "text" as const,
-								text: `Refused to fetch ${params.url}: URL carries query parameters (${new URL(params.url).search}), which a page could use to smuggle data to a remote server. Fetch the base URL, or ask the user to approve the full URL.`,
+								text: `Refused to fetch ${params.url}: URL carries a ${carrying}, which a page could use to smuggle data to a remote server. Fetch the bare origin only (https://<host>), or ask the user to approve the full URL.`,
 							},
 						],
 						details: undefined,
