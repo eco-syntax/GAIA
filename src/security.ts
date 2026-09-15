@@ -2,7 +2,6 @@ import { Type } from "@sinclair/typebox";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
-import type { Config } from "./config.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -10,53 +9,82 @@ const execFileAsync = promisify(execFile);
 // Deny-by-default bash gate. Registers a custom tool named "bash", which
 // shadows pi's built-in bash (pi's tool registry lets custom tools overwrite
 // built-ins by name), so every command from any chat or schedule flows
-// through one allowlist check. Matching is prefix-based per shell segment:
-// the command is split on &&, ||, ;, |, and newlines and EVERY segment must
-// match some "allowedCommands" pattern ("git *" = prefix, "npm test" = exact
-// or prefix-with-args).
-// Fail-closed first: any shell metacharacter that can smuggle a second
-// command (command/process substitution, backticks, background `&`) or
-// redirect files (`<`, `>`) is rejected before pattern matching.
-// ponytail: still not a real shell parser; running the gateway in a
-// container/VM is the upgrade path (see docs/security-plan.md).
+// through one gate we own.
+//
+// There is NO command allowlist. The old prefix allowlist was unsound: any
+// allowlisted binary that can spawn a subprocess (git -c alias.pwn=!id,
+// find . -exec sh -c id, npm test --prefix /tmp/evil, node -e, ...) granted
+// arbitrary command execution, so a prompt-injected model could run anything.
+// Real containment must come from the OS sandbox (container/VM/systemd
+// hardening — see docs/security-plan.md), not from matching strings against
+// programs that can themselves exec.
+//
+// Instead, every bash command is gated behind user approval:
+//   - By default the gate is CLOSED: the tool refuses any command and tells
+//     the model to ask the user.
+//   - The user approves bash for a chat with /bash (an explicit, single
+//     human-in-the-loop decision), which shows a security warning.
+//   - The gate resets to CLOSED whenever a new session starts.
+// This mirrors how most agentic harnesses handle shell access. The gate's job
+// is the approval prompt, not a shell parser.
 // ============================================================================
 
 const OUTPUT_CHAR_LIMIT = 20_000;
 const DEFAULT_TIMEOUT_S = 120;
 const MAX_TIMEOUT_S = 600;
 
-// `$` covers $(...), ${...}, $[...]; backtick covers `...`; `<`/`>` cover
-// redirection and process substitution (<(...), >(...)); a lone `&` covers
-// `cmd & other` (but `&&` is a separator the segment split handles).
-const SHELL_METACHARACTERS = /[$`<>]|(?<!&)&(?!&)/;
+/** Headless one-shot sessions (scheduled tasks) have no user present to
+ * approve a command, so their bash tool must always stay closed. This is a
+ * namespaced sentinel that can never collide with a real chat key
+ * ("platform:chatId"). */
+export const NO_CHAT = "__no_chat__";
 
-/** Every &&/||/;/|/newline-separated segment must match some pattern. */
-export function commandAllowed(command: string, patterns: string[]): boolean {
-	if (patterns.length === 0) return false;
-	if (SHELL_METACHARACTERS.test(command)) return false;
-	const segments = command
-		.split(/&&|\|\||[;|\n]/)
-		.map((s) => s.trim())
-		.filter(Boolean);
-	if (segments.length === 0) return false;
-	return segments.every((seg) =>
-		patterns.some((p) => {
-			p = p.trim();
-			// "git *" → prefix match; "npm test" → exact or exact-with-args
-			const prefix = p.endsWith(" *") ? p.slice(0, -2).trim() : p;
-			return seg === prefix || seg.startsWith(prefix + " ");
-		}),
-	);
+/**
+ * Per-chat bash gate. A chat is CLOSED (blocked) by default; the user must
+ * explicitly approve bash for the session with /bash. Approvals never leak
+ * across a new session.
+ */
+export class BashGate {
+	private approved = new Map<string, boolean>();
+
+	/** True when bash is blocked and every command must be refused. */
+	blocked(chatId: string): boolean {
+		return chatId === NO_CHAT || !this.approved.get(chatId);
+	}
+
+	/** Approve bash for a chat (turns off per-command approval). */
+	allow(chatId: string): void {
+		// NO_CHAT has no user to approve, so it can never be opened.
+		if (chatId !== NO_CHAT) this.approved.set(chatId, true);
+	}
+
+	/** Put a chat back to the default closed state. */
+	block(chatId: string): void {
+		this.approved.set(chatId, false);
+	}
+
+	/** Drop the decision so the NEXT session for this chat starts closed again. */
+	reset(chatId: string): void {
+		this.approved.delete(chatId);
+	}
 }
 
-export function bashGateTool(config: Config, onAccess?: () => void): ToolDefinition {
+/** Shared gate, keyed by namespaced chat key ("platform:chatId"). */
+export const bashGate = new BashGate();
+
+/** @param chatId namespaced chat key ("platform:chatId").
+ * @param onAccess called once a command actually executes (after the gate
+ * passes), so callers can taint the session — command output (gh, git, ...)
+ * is untrusted data, never instructions. Refused commands must NOT taint. */
+export function bashGateTool(chatId: string, onAccess?: () => void): ToolDefinition {
 	return defineTool({
 		name: "bash",
 		label: "bash",
 		description:
 			"Execute a bash command in the current working directory. Returns stdout and stderr, capped. " +
-			"Only commands matching the user's allowlist are executed; anything else is refused. " +
-			"If a command is refused, tell the user what you wanted to run and ask them to approve it with /allow <prefix>.",
+			"Bash is gated: by default every command is refused and you must ask the user to approve " +
+			"bash for this session with /bash. If a command is refused, tell the user exactly what " +
+			"you wanted to run and ask them to run /bash.",
 		parameters: Type.Object({
 			command: Type.String({ description: "Bash command to execute" }),
 			timeout: Type.Optional(
@@ -64,12 +92,12 @@ export function bashGateTool(config: Config, onAccess?: () => void): ToolDefinit
 			),
 		}),
 		async execute(_id, { command, timeout }, signal) {
-			if (!commandAllowed(command, config.allowedCommands ?? [])) {
+			if (bashGate.blocked(chatId)) {
 				return {
 					content: [
 						{
 							type: "text" as const,
-							text: `Refused: \`${command}\` is not on the command allowlist. Ask the user to approve it with /allow.`,
+							text: `Refused: bash is locked in this session, so \`${command}\` was not run. Every bash command needs user approval here. Ask the user to run /bash to approve bash for this session (it shows a security warning first).`,
 						},
 					],
 					details: undefined,
