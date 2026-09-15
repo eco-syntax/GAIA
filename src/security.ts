@@ -72,7 +72,11 @@ export class BashGate {
 /** Shared gate, keyed by namespaced chat key ("platform:chatId"). */
 export const bashGate = new BashGate();
 
-export function bashGateTool(chatId: string): ToolDefinition {
+/** @param chatId namespaced chat key ("platform:chatId").
+ * @param onAccess called once a command actually executes (after the gate
+ * passes), so callers can taint the session — command output (gh, git, ...)
+ * is untrusted data, never instructions. Refused commands must NOT taint. */
+export function bashGateTool(chatId: string, onAccess?: () => void): ToolDefinition {
 	return defineTool({
 		name: "bash",
 		label: "bash",
@@ -99,6 +103,7 @@ export function bashGateTool(chatId: string): ToolDefinition {
 					details: undefined,
 				};
 			}
+			onAccess?.(); // command output (gh, git, ...) is untrusted — taint the session
 			const timeoutS = Math.min(Math.max(timeout ?? DEFAULT_TIMEOUT_S, 1), MAX_TIMEOUT_S);
 			try {
 				const { stdout, stderr } = await execFileAsync("bash", ["-c", command], {

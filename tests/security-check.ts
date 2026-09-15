@@ -39,24 +39,32 @@ const CHAT = "telegram:123";
 assert.ok(bashGate.blocked(CHAT), "new chat starts with bash blocked");
 assert.ok(bashGate.blocked(NO_CHAT), "headless one-shots are always blocked");
 
-// end-to-end: a blocked tool refuses even a benign command
-const tool = bashGateTool(CHAT);
+// end-to-end: a blocked tool refuses even a benign command, and a refused
+// command returns no untrusted output so must NOT taint the session.
+let bashTainted = false;
+const tool = bashGateTool(CHAT, () => {
+	bashTainted = true;
+});
 const run = (cmd: string) =>
 	(tool.execute as unknown as (id: string, params: { command: string }) => Promise<unknown>)("t1", { command: cmd });
 const refused = (await run("echo hello")) as { content: { text: string }[] };
 assert.ok(refused.content[0]!.text.includes("Refused"), "blocked command should be refused");
+assert.ok(!bashTainted, "a refused command returns no untrusted output and must not taint");
 
 // approving the chat opens bash; the same command then runs
 bashGate.allow(CHAT);
 assert.ok(!bashGate.blocked(CHAT), "approved chat is not blocked");
 const ok = (await run("echo hello")) as { content: { text: string }[] };
 assert.ok(ok.content[0]!.text.includes("hello"), "approved command should execute");
+assert.ok(bashTainted, "executed command output should taint the session");
+bashTainted = false;
 
 // a new session resets the chat to the default blocked state
 bashGate.reset(CHAT);
 assert.ok(bashGate.blocked(CHAT), "new session returns chat to default blocked");
 const refusedAgain = (await run("echo hello")) as { content: { text: string }[] };
 assert.ok(refusedAgain.content[0]!.text.includes("Refused"), "reset chat should refuse again");
+assert.ok(!bashTainted, "a refused command must not taint the session");
 
 // NO_CHAT can never be opened, even if someone calls allow() for it
 bashGate.allow(NO_CHAT);
