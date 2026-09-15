@@ -34,8 +34,10 @@ const DEFAULT_TIMEOUT_S = 120;
 const MAX_TIMEOUT_S = 600;
 
 /** Headless one-shot sessions (scheduled tasks) have no user present to
- * approve a command, so their bash tool must always stay closed. */
-export const NO_CHAT = -1;
+ * approve a command, so their bash tool must always stay closed. This is a
+ * namespaced sentinel that can never collide with a real chat key
+ * ("platform:chatId"). */
+export const NO_CHAT = "__no_chat__";
 
 /**
  * Per-chat bash gate. A chat is CLOSED (blocked) by default; the user must
@@ -43,34 +45,34 @@ export const NO_CHAT = -1;
  * across a new session.
  */
 export class BashGate {
-	private approved = new Map<number, boolean>();
+	private approved = new Map<string, boolean>();
 
 	/** True when bash is blocked and every command must be refused. */
-	blocked(chatId: number): boolean {
+	blocked(chatId: string): boolean {
 		return chatId === NO_CHAT || !this.approved.get(chatId);
 	}
 
 	/** Approve bash for a chat (turns off per-command approval). */
-	allow(chatId: number): void {
+	allow(chatId: string): void {
 		// NO_CHAT has no user to approve, so it can never be opened.
 		if (chatId !== NO_CHAT) this.approved.set(chatId, true);
 	}
 
 	/** Put a chat back to the default closed state. */
-	block(chatId: number): void {
+	block(chatId: string): void {
 		this.approved.set(chatId, false);
 	}
 
 	/** Drop the decision so the NEXT session for this chat starts closed again. */
-	reset(chatId: number): void {
+	reset(chatId: string): void {
 		this.approved.delete(chatId);
 	}
 }
 
-/** Shared gate, keyed by Telegram chat id. */
+/** Shared gate, keyed by namespaced chat key ("platform:chatId"). */
 export const bashGate = new BashGate();
 
-export function bashGateTool(chatId: number): ToolDefinition {
+export function bashGateTool(chatId: string): ToolDefinition {
 	return defineTool({
 		name: "bash",
 		label: "bash",
