@@ -1,6 +1,6 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { stateDir, type Schedule } from "./config.js";
+import { ensureStateDir, stateDir, type Schedule } from "./config.js";
 
 // ============================================================================
 // Live schedule registry. Schedules live in ~/.pi-gateway/schedules.json and are
@@ -50,7 +50,7 @@ export function initScheduleStore(seed: Schedule[]): void {
 }
 
 function persist(): void {
-	mkdirSync(stateDir, { recursive: true });
+	ensureStateDir();
 	writeFileSync(SCHEDULES_FILE, JSON.stringify(schedules, null, 2) + "\n", { mode: 0o600 });
 }
 

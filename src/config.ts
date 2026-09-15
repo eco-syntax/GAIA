@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -68,6 +68,17 @@ function updateConfigFile(mutate: (raw: Config) => void): void {
 }
 
 export const stateDir = STATE_DIR;
+
+/**
+ * Create the state directory (~/.pi-gateway) with owner-only mode 0700.
+ * Everything inside — conversation logs, MEMORY.md, the FTS recall index,
+ * research dumps — routinely contains secrets users paste to the agent (API
+ * keys, credentials, personal data). mkdirSync's default is 0755, which would
+ * let any local user read them on a multi-user host, so force 0700.
+ */
+export function ensureStateDir(): void {
+	mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+}
 
 /** Set the default model: update the in-memory config AND persist it. */
 export function setModel(config: Config, model: Config["model"]): void {
