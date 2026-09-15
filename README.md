@@ -25,7 +25,7 @@ scheduled tasks, web research, and local voice — built entirely on pi's SDK, n
   saved to `~/.pi-gateway/research/`, capped in context like Hermes's approach).
 - **Memory & recall**: durable user facts live in a capped `MEMORY.md`, injected as session messages (never into the system prompt). The `recall` tool is full-text search (SQLite FTS5, incrementally indexed) over all persisted session logs, with a one-shot LLM summary of the hits — Hermes-style cross-session recall, also delivered as a tool result.
 - **`/plan <idea>`**: one-shot spec writer — numbered build plan with file paths and acceptance criteria.
-- **Chat commands**: `/new` (fresh session), `/model [provider/id]` (list or switch models),
+- **Chat commands**: `/new` (fresh session, prints the current model), `/model` (interactive two-level menu: pick a provider, then a model; the typed `/model provider/id` still works),
   `/stop` (interrupt a running turn), `/link [code]` (identity bridging across platforms),
   `/whoami` (show the linked identity), `/plan` — registered in Telegram's slash-command menu
   (and typed directly on every other platform). Sending any new message also interrupts a running

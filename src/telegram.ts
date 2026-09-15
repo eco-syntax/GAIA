@@ -6,7 +6,7 @@
 import { fetch, FormData as undiciFormData } from "undici";
 import { toTelegramHtml } from "./format.js";
 import { retry, sleep } from "./net.js";
-import { chunkText, type ChatMessage, type ChatRef, type Platform } from "./platform.js";
+import { chunkText, type ChatMessage, type ChatRef, type InlineButton, type Platform } from "./platform.js";
 
 const API = "https://api.telegram.org/bot";
 
@@ -39,6 +39,13 @@ export { errorCode } from "./net.js";
 interface TgUpdate {
 	update_id: number;
 	message?: TgMessage;
+	/** Inline-keyboard press from the /model menu. */
+	callback_query?: {
+		id: string;
+		from: { id: number; first_name?: string; username?: string };
+		message?: { chat: { id: number; type?: string }; message_id: number };
+		data?: string;
+	};
 }
 
 async function tg(token: string, method: string, body: unknown, signal?: AbortSignal): Promise<unknown> {
@@ -82,7 +89,9 @@ export async function setMyCommands(
 }
 
 /** Telegram platform. Voice is Telegram-only: incoming voice notes are fetched
- * by file_id and replies can be sent as OGG/Opus voice notes. */
+ * by file_id and replies can be sent as OGG/Opus voice notes. The /model menu
+ * is also Telegram-only: inline-keyboard presses come through the same poll as
+ * callbacks and are answered via answerCallbackQuery. */
 export function createTelegramPlatform(token: string, allowedChatIds: string[]): Platform {
 	const allowed = new Set(allowedChatIds.map(String));
 	return {
@@ -114,12 +123,33 @@ export function createTelegramPlatform(token: string, allowedChatIds: string[]):
 					const updates = (await tg(token, "getUpdates", {
 						offset,
 						timeout: 50,
-						allowed_updates: ["message"],
+						allowed_updates: ["message", "callback_query"],
 					}, signal)) as TgUpdate[];
 					for (const u of updates ?? []) {
 						// Confirm every update exactly once, even ones we skip — otherwise a
 						// lone photo/sticker re-pollutes every subsequent getUpdates response.
 						offset = Math.max(offset, u.update_id + 1);
+						// Inline-button presses have no date, so the staleness filter below
+						// can't apply; the callback id is globally unique, so it dedups
+						// redeliveries on its own.
+						const cq = u.callback_query;
+						if (cq) {
+							const chatId = String(cq.message?.chat.id ?? cq.from.id);
+							if (!allowed.has(chatId)) continue;
+							if (!remember(`cq:${cq.id}`)) continue;
+							yield {
+								ref: { platform: "telegram", chatId },
+								userId: String(cq.from.id),
+								userName: cq.from.first_name ?? cq.from.username,
+								direct: cq.message?.chat.type === "private",
+								callback: {
+									id: cq.id,
+									data: cq.data ?? "",
+									messageId: cq.message ? String(cq.message.message_id) : undefined,
+								},
+							};
+							continue;
+						}
 						const msg = u.message;
 						if (!msg?.from) continue;
 						if (!msg.text && !msg.voice) continue;
@@ -195,6 +225,32 @@ export function createTelegramPlatform(token: string, allowedChatIds: string[]):
 				const res = await fetch(`https://api.telegram.org/file/bot${token}/${file.file_path}`);
 				if (!res.ok) throw new Error(`telegram file download: ${res.status}`);
 				return Buffer.from(await res.arrayBuffer());
+			});
+		},
+		// ---- /model inline menu (issue #90) ----
+		async sendMenu(ref: ChatRef, text: string, rows: InlineButton[][]): Promise<string | undefined> {
+			const result = (await tg(token, "sendMessage", {
+				chat_id: Number(ref.chatId),
+				text: toTelegramHtml(text),
+				parse_mode: "HTML",
+				link_preview_options: { is_disabled: true },
+				reply_markup: { inline_keyboard: rows },
+			})) as { message_id: number };
+			return String(result.message_id);
+		},
+		async editMenu(ref: ChatRef, messageId: string, text: string, rows: InlineButton[][]): Promise<void> {
+			await tg(token, "editMessageText", {
+				chat_id: Number(ref.chatId),
+				message_id: Number(messageId),
+				text: toTelegramHtml(text),
+				parse_mode: "HTML",
+				reply_markup: { inline_keyboard: rows },
+			});
+		},
+		async answerCallback(callbackQueryId: string, text?: string): Promise<void> {
+			await tg(token, "answerCallbackQuery", {
+				callback_query_id: callbackQueryId,
+				...(text ? { text } : {}),
 			});
 		},
 	};

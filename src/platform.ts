@@ -29,6 +29,9 @@ export interface ChatMessage {
 	/** True only in a 1:1 DM between the agent and a single user — the only
 	 * place identity linking (/link) is allowed. */
 	direct: boolean;
+	/** Inline-keyboard button press (Telegram /model menu). Set instead of a
+	 * normal message; only Telegram yields these. */
+	callback?: { id: string; data: string; messageId?: string };
 }
 
 export interface Platform {
@@ -45,7 +48,25 @@ export interface Platform {
 	sendVoice?(ref: ChatRef, data: Buffer, mime: string): Promise<void>;
 	/** Fetch a voice attachment by id (Telegram file_id); voice platforms only. */
 	getVoice?(fileId: string): Promise<Buffer>;
+	/** Send text with an inline keyboard (Telegram's /model menu). Returns the
+	 * message id so the menu can be edited in place. Platforms without menus
+	 * omit it and fall back to a plain text list. */
+	sendMenu?(ref: ChatRef, text: string, rows: InlineButton[][]): Promise<string | undefined>;
+	/** Replace an inline-keyboard message's text/buttons (menu navigation). */
+	editMenu?(ref: ChatRef, messageId: string, text: string, rows: InlineButton[][]): Promise<void>;
+	/** Acknowledge an inline-button press (clears the button's spinner). */
+	answerCallback?(callbackQueryId: string, text?: string): Promise<void>;
 }
+
+/** One Telegram inline-keyboard button. */
+export interface InlineButton {
+	text: string;
+	callback_data?: string;
+	url?: string;
+}
+
+/** Telegram inline-keyboard reply markup. */
+export type InlineKeyboard = { inline_keyboard: InlineButton[][] };
 
 /** Split long text into sendable chunks (platforms cap message length). */
 export function chunkText(text: string, max: number): string[] {
