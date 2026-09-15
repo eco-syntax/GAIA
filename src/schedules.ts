@@ -1,16 +1,18 @@
 import type { Schedule } from "./config.js";
+import { scheduleChatRef } from "./config.js";
 import { runOneShot } from "./session.js";
 import type { Config } from "./config.js";
 import { addSchedule, listSchedules, parseAt, parseEvery, removeSchedule } from "./scheduleStore.js";
 import { Type } from "@sinclair/typebox";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { ChatRef } from "./platform.js";
 
 /**
  * Agent-facing scheduling tool, in the same style as memory.ts: a tool the LLM
  * can call to set/list/remove recurring tasks at runtime. The result of each
- * task is delivered to the chat it was created in (the chatId closure).
+ * task is delivered to the chat it was created in (the ref closure).
  */
-export function scheduleTool(chatId: number): ToolDefinition {
+export function scheduleTool(ref: ChatRef): ToolDefinition {
 	return defineTool({
 		name: "schedule",
 		label: "Scheduled tasks",
@@ -30,7 +32,7 @@ export function scheduleTool(chatId: number): ToolDefinition {
 					return { content: [{ type: "text" as const, text: "No scheduled tasks." }], details: undefined };
 				}
 				const text = scheds
-					.map((s) => `\u2022 ${s.name} \u2014 ${s.every ? `every ${s.every}` : `daily at ${s.at}`}: ${s.prompt}`)
+					.map((s) => `\u2022 ${s.name} \u2014 ${s.every ? `every ${s.every}` : `daily at ${s.at}`} (${s.platform ?? "telegram"} ${s.chatId}): ${s.prompt}`)
 					.join("\n");
 				return { content: [{ type: "text" as const, text }], details: undefined };
 			}
@@ -53,7 +55,7 @@ export function scheduleTool(chatId: number): ToolDefinition {
 			if (!params.every && !params.at) {
 				return { content: [{ type: "text" as const, text: "Specify an interval (every) or a daily time (at)." }], details: undefined };
 			}
-			const res = addSchedule({ name, prompt, every: params.every, at: params.at, chatId });
+			const res = addSchedule({ name, prompt, every: params.every, at: params.at, platform: ref.platform, chatId: ref.chatId });
 			return {
 				content: [{
 					type: "text" as const,
@@ -94,16 +96,17 @@ const INJECT_CHAR_LIMIT = 6000;
 async function injectResult(
 	sched: Schedule,
 	text: string,
-	inject: ((chatId: number, content: string) => Promise<void>) | undefined,
+	inject: ((ref: ChatRef, content: string) => Promise<void>) | undefined,
 ): Promise<void> {
 	if (sched.inject === false || !inject) return;
+	const ref = scheduleChatRef(sched);
 	const ranAt = new Date();
 	const body =
 		text.length > INJECT_CHAR_LIMIT
 			? `${text.slice(0, INJECT_CHAR_LIMIT)}\n…(truncated)`
 			: text;
 	try {
-		await inject(sched.chatId, `Scheduled task "${sched.name}" result (${ranAt.toISOString()}):\n${body}`);
+		await inject(ref, `Scheduled task "${sched.name}" result (${ranAt.toISOString()}):\n${body}`);
 	} catch (err) {
 		console.error(`injecting schedule "${sched.name}" result into session failed:`, err);
 	}
@@ -111,8 +114,8 @@ async function injectResult(
 
 export function startScheduler(
 	config: Config,
-	deliver: (chatId: number, text: string) => Promise<void>,
-	injectContext?: (chatId: number, content: string) => Promise<void>,
+	deliver: (ref: ChatRef, text: string) => Promise<void>,
+	injectContext?: (ref: ChatRef, content: string) => Promise<void>,
 ): NodeJS.Timeout {
 	const nextRun = new Map<string, number>();
 	// Initialize to startup time: a fresh start after today's `at` has already
@@ -143,6 +146,7 @@ export function startScheduler(
 				}
 				if (!due) continue;
 				console.log(`schedule ${sched.name} firing`);
+				const ref = scheduleChatRef(sched);
 				runOneShot(
 					config,
 					"You are completing a scheduled background task. Produce the requested output as concise plain text suitable for a chat message.",
@@ -150,12 +154,12 @@ export function startScheduler(
 					{ tools: ["read", "bash"] },
 				)
 					.then(async (text) => {
-						await deliver(sched.chatId, text);
+						await deliver(ref, text);
 						await injectResult(sched, text, injectContext);
 					})
 					.catch((err) => {
 						console.error(`schedule ${sched.name} failed:`, err);
-						void deliver(sched.chatId, `Scheduled task "${sched.name}" failed: ${err}`).catch(() => {});
+						void deliver(ref, `Scheduled task "${sched.name}" failed: ${err}`).catch(() => {});
 					});
 			}
 		},
