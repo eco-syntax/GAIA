@@ -7,7 +7,7 @@ import dns from "node:dns";
 import { isIP } from "node:net";
 import type { LookupFunction } from "node:net";
 import { join } from "node:path";
-import { stateDir } from "./config.js";
+import { stateDir, ensureStateDir } from "./config.js";
 
 // ============================================================================
 // Hermes-style web search + fetch: one tool, zero user configuration.
@@ -352,10 +352,11 @@ export function webTools(onAccess?: () => void): ToolDefinition[] {
 				return { content: [{ type: "text" as const, text }], details: undefined };
 			}
 			// Only persist pages that exceed the inline limit; short fetches never touch disk.
+			ensureStateDir(); // stateDir must be owner-only before anything goes under it
 			mkdirSync(researchDir, { recursive: true });
 			const slug = params.url.replace(/[^a-z0-9]+/gi, "-").slice(0, 80);
 			const path = join(researchDir, `${slug}.txt`);
-			writeFileSync(path, text);
+			writeFileSync(path, text, { mode: 0o600 });
 			const note = truncated
 				? `\n\n[body exceeded ${MAX_BODY_BYTES} bytes; saved truncated text to ${path}]`
 				: text.length > FETCH_CHAR_LIMIT

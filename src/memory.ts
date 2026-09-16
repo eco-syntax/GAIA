@@ -1,9 +1,9 @@
 import { Type } from "@sinclair/typebox";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { stateDir, type Config } from "./config.js";
+import { ensureStateDir, stateDir, type Config } from "./config.js";
 import { identityIdForChat, recallChatScope } from "./identity.js";
 import type { ChatRef } from "./platform.js";
 
@@ -53,8 +53,10 @@ let recallDb: DatabaseSync | undefined;
 
 function openRecallDb(): DatabaseSync {
 	if (recallDb) return recallDb;
-	mkdirSync(stateDir, { recursive: true });
+	ensureStateDir();
 	const db = new DatabaseSync(RECALL_DB);
+	// The FTS index mirrors conversation logs, which hold secrets; keep it 0600.
+	chmodSync(RECALL_DB, 0o600);
 	db.exec("CREATE VIRTUAL TABLE IF NOT EXISTS chunks USING fts5(path UNINDEXED, chat UNINDEXED, ts UNINDEXED, role UNINDEXED, text)");
 	db.exec("CREATE TABLE IF NOT EXISTS files (path TEXT PRIMARY KEY, mtime REAL, size INTEGER)");
 	recallDb = db;
@@ -132,7 +134,7 @@ function appendMemoryLine(line: string, file = MEMORY_FILE): string {
 	const lines = next.split("\n");
 	while (next.length > MEMORY_CHAR_LIMIT && lines.length > 1) lines.shift();
 	next = lines.join("\n").slice(-MEMORY_CHAR_LIMIT);
-	writeFileSync(file, next);
+	writeFileSync(file, next, { mode: 0o600 });
 	return line;
 }
 
@@ -182,7 +184,7 @@ export function memoryTools(config: Config, isUntrustedContext: () => boolean = 
 			content: Type.Optional(Type.String({ description: "One-line fact (save) or phrase to match (forget)" })),
 		}),
 		async execute(_id, params) {
-			mkdirSync(stateDir, { recursive: true });
+			ensureStateDir();
 			const current = loadMemory(file);
 			if (params.action === "list") {
 				return { content: [{ type: "text" as const, text: current || "(empty)" }], details: undefined };
@@ -216,7 +218,7 @@ export function memoryTools(config: Config, isUntrustedContext: () => boolean = 
 			const kept = current
 				.split("\n")
 				.filter((l) => !phrase || !l.toLowerCase().includes(phrase.toLowerCase()));
-			writeFileSync(file, kept.join("\n"));
+			writeFileSync(file, kept.join("\n"), { mode: 0o600 });
 			pendingMemoryUpdate = `Memory updated (removed ${current.split("\n").length - kept.length} line(s)). Current memory:\n${kept.join("\n").trim() || "(empty)"}`;
 			return {
 				content: [{ type: "text" as const, text: `Removed ${current.split("\n").length - kept.length} line(s).` }],
