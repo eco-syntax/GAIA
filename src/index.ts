@@ -20,14 +20,14 @@ import { takePendingMemoryUpdate, pendingMemoryStaged, approveStagedMemory, drop
 import { createPendingLink, consumeLink, whoami } from "./identity.js";
 import { webTools } from "./web.js";
 import { startScheduler } from "./schedules.js";
-import { initScheduleStore } from "./scheduleStore.js";
+import { loadSchedules, listSchedules } from "./scheduleStore.js";
 import { synthesize, ttsAvailable } from "./tts.js";
 import { transcribe, sttAvailable } from "./stt.js";
 import { chatKey, type ChatMessage, type ChatRef, type InlineButton, type Platform } from "./platform.js";
 import { bashGate } from "./security.js";
 
 const config = loadConfig();
-initScheduleStore(config.schedules);
+loadSchedules();
 const chats = new ChatSessions(config);
 const tools = webTools();
 const useTts = config.piperVoice ? ttsAvailable(config.piperVoice) : false;
@@ -346,7 +346,7 @@ if (platforms.telegram) {
 		{ command: "bash", description: "Approve or lock bash for this session (/bash, /bash off)" },
 	]);
 }
-console.log(`pi-gateway running (state: ${stateDir}), platforms: ${Object.keys(platforms).join(", ")}, ${config.schedules.length} schedules`);
+console.log(`pi-gateway running (state: ${stateDir}), platforms: ${Object.keys(platforms).join(", ")}, ${listSchedules().length} schedules`);
 
 // Turns on one chat must not interleave (shared session history), so each chat
 // has a serial queue keyed by platform:chatId. Commands that must land

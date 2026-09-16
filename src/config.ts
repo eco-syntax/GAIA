@@ -50,7 +50,8 @@ export interface Config {
 	piperVoice?: string;
 	/** whisper.cpp ggml model for voice-note transcription; omit to ignore voice messages (Telegram only). */
 	whisperModel?: string;
-	schedules: Schedule[];
+	/** Bash allowlist patterns ("git *", "npm test"); every shell segment must match one. Empty = bash fully denied. */
+	allowedCommands?: string[];
 }
 
 interface ConfiguredPlatform {
@@ -129,7 +130,7 @@ export function loadConfig(): Config {
 		model: raw.model,
 		piperVoice: raw.piperVoice,
 		whisperModel: raw.whisperModel,
-		schedules: raw.schedules ?? [],
+		allowedCommands: raw.allowedCommands ?? [],
 	};
 }
 
