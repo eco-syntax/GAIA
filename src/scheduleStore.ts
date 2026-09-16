@@ -45,9 +45,12 @@ function persist(): void {
 	writeFileSync(SCHEDULES_FILE, JSON.stringify(schedules, null, 2) + "\n", { mode: 0o600 });
 }
 
-/** Snapshot of the live registry. */
-export function listSchedules(): Schedule[] {
-	return [...schedules];
+/** Snapshot of the live registry, optionally scoped to one chat. The scheduler
+ * (needs every task) calls with no chatId; the agent tool passes the requesting
+ * chat so it never sees or acts on schedules owned by other chats. */
+export function listSchedules(chatId?: number): Schedule[] {
+	const all = [...schedules];
+	return chatId === undefined ? all : all.filter((s) => s.chatId === chatId);
 }
 
 export type AddResult = { ok: true } | { ok: false; error: string };
@@ -71,10 +74,12 @@ export function addSchedule(s: Schedule): AddResult {
 	return { ok: true };
 }
 
-/** Remove by exact name. Returns true if something was removed. */
-export function removeSchedule(name: string): boolean {
+/** Remove by exact name, scoped to a chat: only a schedule owned by chatId
+ * can be removed, so a chat can never delete another chat's tasks. Returns
+ * true if something was removed. */
+export function removeSchedule(name: string, chatId: number): boolean {
 	const before = schedules.length;
-	schedules = schedules.filter((s) => s.name !== name);
+	schedules = schedules.filter((s) => s.name !== name || s.chatId !== chatId);
 	if (schedules.length !== before) {
 		persist();
 		return true;

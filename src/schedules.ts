@@ -27,9 +27,11 @@ export function scheduleTool(ref: ChatRef): ToolDefinition {
 		}),
 		async execute(_id, params) {
 			if (params.action === "list") {
-				const scheds = listSchedules();
+				// Filter to THIS chat: schedules are per-chat, so a chat must never
+				// enumerate (or read the prompts of) another chat's tasks.
+				const scheds = listSchedules(chatId);
 				if (!scheds.length) {
-					return { content: [{ type: "text" as const, text: "No scheduled tasks." }], details: undefined };
+					return { content: [{ type: "text" as const, text: "No scheduled tasks for this chat." }], details: undefined };
 				}
 				const text = scheds
 					.map((s) => `\u2022 ${s.name} \u2014 ${s.every ? `every ${s.every}` : `daily at ${s.at}`} (${s.platform ?? "telegram"} ${s.chatId}): ${s.prompt}`)
@@ -41,9 +43,10 @@ export function scheduleTool(ref: ChatRef): ToolDefinition {
 				if (!name) {
 					return { content: [{ type: "text" as const, text: "Specify the task name to remove." }], details: undefined };
 				}
-				const text = removeSchedule(name)
+				// Scope deletion to THIS chat: a chat can only remove its own tasks.
+				const text = removeSchedule(name, chatId)
 					? `Removed schedule "${name}".`
-					: `No schedule named "${name}".`;
+					: `No schedule named "${name}" in this chat.`;
 				return { content: [{ type: "text" as const, text }], details: undefined };
 			}
 			// add
