@@ -14,18 +14,18 @@ scheduled tasks, web research, and local voice — built entirely on pi's SDK, n
   join (either direction works). No passwords in plain text — the code proves access to both chats.
   Linked chats share one memory file and recall only searches that identity's logs, never anyone
   else's. `/whoami` shows the linked identity. Linking is restricted to 1:1 DMs only, never group chats.
-- **Scheduled tasks**: `schedules` in config are just `{name, every|at, chatId, prompt}` — the
-  gateway runs a headless pi turn on a timer and delivers the result to the chat. No job types, no DSL.
+- **Scheduled tasks**: schedules are just `{name, every|at, chatId, prompt}` records in
+  `~/.pi-gateway/schedules.json` — the gateway runs a headless pi turn on a timer and delivers the
+  result to the chat. No job types, no DSL.
   A `schedule` tool is exposed to the agent too, so GAIA can set/list/remove recurring tasks itself at
-  runtime (interval `30m`/`2h`/`1d` or daily `HH:MM`); the live registry lives in
-  `~/.pi-gateway/schedules.json` and needs no restart. Each result is also appended into the target
+  runtime (interval `30m`/`2h`/`1d` or daily `HH:MM`); the live registry needs no restart. Each result is also appended into the target
   chat's session log (set `"inject": false` on a schedule to opt out), so follow-ups like "what did
   the scan say about X?" are grounded in what the task actually found rather than posted in isolation.
 - **Web research**: built-in `websearch` + `fetchpage` tools (DuckDuckGo, no API keys; full page text
   saved to `~/.pi-gateway/research/`, capped in context like Hermes's approach).
 - **Memory & recall**: durable user facts live in a capped `MEMORY.md`, injected as session messages (never into the system prompt). The `recall` tool is full-text search (SQLite FTS5, incrementally indexed) over all persisted session logs, with a one-shot LLM summary of the hits — Hermes-style cross-session recall, also delivered as a tool result.
 - **`/plan <idea>`**: one-shot spec writer — numbered build plan with file paths and acceptance criteria.
-- **Chat commands**: `/new` (fresh session), `/model [provider/id]` (list or switch models),
+- **Chat commands**: `/new` (fresh session, prints the current model), `/model` (interactive two-level menu: pick a provider, then a model; the typed `/model provider/id` still works),
   `/stop` (interrupt a running turn), `/link [code]` (identity bridging across platforms),
   `/whoami` (show the linked identity), `/plan` — registered in Telegram's slash-command menu
   (and typed directly on every other platform). Sending any new message also interrupts a running
@@ -39,10 +39,11 @@ scheduled tasks, web research, and local voice — built entirely on pi's SDK, n
   ignored. Text files (logs, configs, code) are returned inline (capped like `fetchpage`); binary
   files report their mime/size. Files are capped and the tool reads only its own inbox — it never
   reopens the ungated file-tool hole the chat sessions deliberately close.
-- **Bash allowlist**: the built-in bash tool is shadowed by a deny-by-default gate
-  (`src/security.ts`). Every shell segment (`&&`, `;`, `|` split) must match an
-  `"allowedCommands"` pattern (`"git *"`, `"npm test"`); anything else is refused and the agent
-  asks the user, who approves with `/allow <prefix>`. The systemd unit adds OS-level containment
+- **Bash approval gate**: the built-in bash tool is shadowed by a deny-by-default gate
+  (`src/security.ts`). There is no command allowlist — every bash command is
+  refused until you approve it for the current session with `/bash` (which shows
+  a security warning; `/bash off` re-locks it; `/new`/`/start` resets to locked).
+  The systemd unit adds OS-level containment
   (ProtectSystem/ProtectHome/PrivateTmp) as a second layer — see `docs/security-plan.md`.
 
 ## Setup
@@ -69,12 +70,14 @@ cat > ~/.pi-gateway/config.json <<'EOF'
   "matrixAccessToken": "…",
   "allowedMatrixRoomIds": ["!room:example.org"],
   "model": { "provider": "lmstudio", "id": "qwen3-32b" },
-  "piperVoice": "/opt/piper/voices/en_US-lessac-medium.onnx",
-  "schedules": [
-    { "name": "morning-brief", "at": "08:00", "chatId": 123456789,
-      "prompt": "Check my open PRs with gh and summarize anything needing attention." }
-  ]
+  "piperVoice": "/opt/piper/voices/en_US-lessac-medium.onnx"
 }
+EOF
+cat > ~/.pi-gateway/schedules.json <<'EOF'
+[
+  { "name": "morning-brief", "at": "08:00", "chatId": 123456789,
+    "prompt": "Check my open PRs with gh and summarize anything needing attention." }
+]
 EOF
 npm start
 ```
@@ -91,7 +94,7 @@ Ollama, vLLM, llama.cpp are built in; see pi's providers doc).
 ### Docker
 
 Runs as a non-root user with no access to host secrets; the only host path it
-touches is the `~/.pi-gateway` volume. Complements the bash allowlist gate and
+touches is the `~/.pi-gateway` volume. Complements the bash approval gate and
 the systemd unit's hardening (see `docs/security-plan.md`).
 
 ```bash

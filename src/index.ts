@@ -1,4 +1,4 @@
-import { loadConfig, stateDir, addAllowedCommand } from "./config.js";
+import { loadConfig, stateDir } from "./config.js";
 import { EnvHttpProxyAgent, setGlobalDispatcher } from "undici";
 
 // Node's global fetch ignores HTTPS_PROXY by default; the platform transports
@@ -20,15 +20,16 @@ import { takePendingMemoryUpdate, pendingMemoryStaged, approveStagedMemory, drop
 import { createPendingLink, consumeLink, whoami } from "./identity.js";
 import { webTools } from "./web.js";
 import { startScheduler } from "./schedules.js";
-import { initScheduleStore } from "./scheduleStore.js";
+import { loadSchedules, listSchedules } from "./scheduleStore.js";
 import { synthesize, ttsAvailable } from "./tts.js";
 import { transcribe, sttAvailable } from "./stt.js";
-import { chatKey, type ChatMessage, type ChatRef, type Platform } from "./platform.js";
+import { chatKey, type ChatMessage, type ChatRef, type InlineButton, type Platform } from "./platform.js";
 import { saveAttachment } from "./attachments.js";
 import { basename } from "node:path";
+import { bashGate } from "./security.js";
 
 const config = loadConfig();
-initScheduleStore(config.schedules);
+loadSchedules();
 const chats = new ChatSessions(config);
 const tools = webTools();
 const useTts = config.piperVoice ? ttsAvailable(config.piperVoice) : false;
@@ -107,6 +108,162 @@ function startTypingIndicator(platform: Platform, ref: ChatRef): () => void {
 }
 
 const TOOL_ICONS: Record<string, string> = { websearch: "🔍", fetchpage: "🌐", bash: "⚙️", read: "📄", schedule: "🔁" };
+
+// ---- /model inline menu -----------------------------------------------------
+// Two-level navigation instead of a long pasteable list: first pick a provider,
+// then a model, all by tapping buttons. Callback payloads are pipe-delimited:
+// Telegram silently truncates callback_data past 64 bytes, and JSON's braces and
+// quotes push long specs (e.g. "bedrock/us.anthropic.claude-3-5-sonnet-20241022-v2:0")
+// over the limit. "set|<provider>/<id>" leaves ~58 bytes of headroom for the id;
+// anything that still wouldn't fit is skipped rather than rendered as a dead button.
+const MODELS_PER_PAGE = 10;
+const cb = (a: string, value?: string): string | null => {
+	const data = value === undefined ? a : `${a}|${value}`;
+	return Buffer.byteLength(data) <= 64 ? data : null;
+};
+
+/** Parse a callback payload back into { a: action, p?: provider, n?: page, s?: spec }. */
+function parseCb(data: string): { a: string; p?: string; n?: number; s?: string } | undefined {
+	const [a, ...parts] = data.split("|");
+	const value = parts.join("|");
+	switch (a) {
+		case "pg": {
+			const n = Number(parts[1]);
+			if (!parts[0] || !Number.isFinite(n)) return undefined;
+			return { a, p: parts[0], n };
+		}
+		case "set": return value ? { a, s: value } : undefined;
+		case "p": return value ? { a, p: value } : undefined;
+		case "cancel":
+		case "providers":
+			return { a };
+		default:
+			return undefined;
+	}
+}
+
+/** List every selectable "provider/id" spec, for plain-text platforms that
+ * can't show the interactive keyboard menu. */
+async function allModelSpecs(): Promise<string[]> {
+	const out: string[] = [];
+	for (const p of await chats.providers()) {
+		for (const m of await chats.models(p)) out.push(m.spec);
+	}
+	return out;
+}
+
+/** Provider-selection page — the first page /model shows, with the current model. */
+async function providerMenu(): Promise<{ text: string; rows: InlineButton[][] }> {
+	const providers = await chats.providers();
+	const rows: InlineButton[][] = [];
+	for (const p of providers) {
+		const data = cb("p", p);
+		if (!data) {
+			console.warn(`skipping provider button (callback data too long): ${p}`);
+			continue;
+		}
+		rows.push([{ text: p, callback_data: data }]);
+	}
+	rows.push([{ text: "✖ Cancel", callback_data: "cancel" }]);
+	const body =
+		providers.length === 0
+			? "No providers in the model catalog yet."
+			: "Choose a provider:";
+	return {
+		text: `Current model: ${await chats.currentModel()}\n\n${body}`,
+		rows,
+	};
+}
+
+/** One page of a provider's model list, with prev/next/back/cancel navigation. */
+async function modelMenu(provider: string, page: number): Promise<{ text: string; rows: InlineButton[][] }> {
+	const models = await chats.models(provider);
+	const pages = Math.max(1, Math.ceil(models.length / MODELS_PER_PAGE));
+	const current = Math.min(Math.max(0, page), pages - 1);
+	const slice = models.slice(current * MODELS_PER_PAGE, (current + 1) * MODELS_PER_PAGE);
+	const rows: InlineButton[][] = [];
+	for (const m of slice) {
+		const data = cb("set", m.spec);
+		if (!data) {
+			console.warn(`skipping model button (callback data too long): ${m.spec}`);
+			continue;
+		}
+		rows.push([{ text: m.label, callback_data: data }]);
+	}
+	const nav: InlineButton[] = [];
+	if (current > 0) {
+		const data = cb("pg", `${provider}|${current - 1}`);
+		if (data) nav.push({ text: "‹ Prev", callback_data: data });
+	}
+	if (current < pages - 1) {
+		const data = cb("pg", `${provider}|${current + 1}`);
+		if (data) nav.push({ text: "Next ›", callback_data: data });
+	}
+	if (nav.length) rows.push(nav);
+	rows.push([
+		{ text: "‹ Back", callback_data: "providers" },
+		{ text: "✖ Cancel", callback_data: "cancel" },
+	]);
+	const header =
+		models.length === 0
+			? `No models found for provider "${provider}".`
+			: pages > 1
+				? `${provider} — choose a model (page ${current + 1}/${pages}):`
+				: `${provider} — choose a model:`;
+	return { text: header, rows };
+}
+
+/** Inline-button press: navigate the /model menu, or apply a model switch. */
+async function handleCallback(ref: ChatRef, press: { id: string; data: string; messageId?: string }): Promise<void> {
+	const platform = platforms[ref.platform]!;
+	const action = parseCb(press.data);
+	if (!action) {
+		await platform.answerCallback?.(press.id, "Unknown action");
+		return;
+	}
+	if (action.a === "cancel") {
+		await platform.answerCallback?.(press.id, "Cancelled");
+		if (press.messageId !== undefined) await platform.deleteMessage(ref, press.messageId);
+		return;
+	}
+	if (action.a === "providers") {
+		await platform.answerCallback?.(press.id);
+		if (press.messageId !== undefined && platform.editMenu) {
+			const menu = await providerMenu();
+			await platform.editMenu(ref, press.messageId, menu.text, menu.rows);
+		}
+		return;
+	}
+	if (action.a === "provider" && action.p) {
+		await platform.answerCallback?.(press.id);
+		if (press.messageId !== undefined && platform.editMenu) {
+			const menu = await modelMenu(action.p, 0);
+			await platform.editMenu(ref, press.messageId, menu.text, menu.rows);
+		}
+		return;
+	}
+	if (action.a === "page" && action.p && action.n !== undefined) {
+		await platform.answerCallback?.(press.id);
+		if (press.messageId !== undefined && platform.editMenu) {
+			const menu = await modelMenu(action.p, action.n);
+			await platform.editMenu(ref, press.messageId, menu.text, menu.rows);
+		}
+		return;
+	}
+	if (action.a === "set" && action.s) {
+		const err = await chats.switchModel(action.s);
+		if (err) {
+			await platform.answerCallback?.(press.id, err.slice(0, 200));
+		} else {
+			await platform.answerCallback?.(press.id, `Model set to ${action.s}`);
+			if (press.messageId !== undefined && platform.editMenu) {
+				await platform.editMenu(ref, press.messageId, `✅ Model set to ${action.s} — new sessions use it.`, []);
+			}
+		}
+		return;
+	}
+	await platform.answerCallback?.(press.id, "Unknown action");
+}
 
 /** Send a small status message when a tool starts; delete it when it ends. */
 function watchToolActivity(
@@ -188,9 +345,10 @@ if (platforms.telegram) {
 		{ command: "whoami", description: "Show the linked identity" },
 		{ command: "stop", description: "Interrupt the current turn" },
 		{ command: "model", description: "Show or switch the model (/model [provider/id])" },
+		{ command: "bash", description: "Approve or lock bash for this session (/bash, /bash off)" },
 	]);
 }
-console.log(`pi-gateway running (state: ${stateDir}), platforms: ${Object.keys(platforms).join(", ")}, ${config.schedules.length} schedules`);
+console.log(`pi-gateway running (state: ${stateDir}), platforms: ${Object.keys(platforms).join(", ")}, ${listSchedules().length} schedules`);
 
 // Turns on one chat must not interleave (shared session history), so each chat
 // has a serial queue keyed by platform:chatId. Commands that must land
@@ -235,6 +393,7 @@ async function handleMessage(msg: ChatMessage, prompt: string, voice: boolean): 
 				{
 					tools: ["read", "bash"],
 					customTools: tools,
+					chatId,
 					onSession: (session) => {
 						planSession = session;
 						trackTurn(chatId, session);
@@ -250,11 +409,27 @@ async function handleMessage(msg: ChatMessage, prompt: string, voice: boolean): 
 		}
 		return;
 	}
-	if (prompt === "/model" || prompt.startsWith("/model ")) {
+	if (prompt === "/model") {
+		// Two-level interactive menu (Telegram inline keyboards); other platforms
+		// fall back to a plain list. Either way the current model is shown (issue #90).
+		if (platform.sendMenu) {
+			const menu = await providerMenu();
+			await platform.sendMenu(ref, menu.text, menu.rows);
+		} else {
+			await platform.sendText(
+				ref,
+				`Current model: ${await chats.currentModel()}\n\nAvailable models:\n${(await allModelSpecs()).join("\n")}\n\nSwitch with /model provider/id`,
+			);
+		}
+		return;
+	}
+	if (prompt.startsWith("/model ")) {
 		const arg = prompt.slice(6).trim();
 		if (!arg) {
-			const models = await chats.models();
-			await platform.sendText(ref, `Available models:\n${models.join("\n")}\n\nSwitch with /model provider/id`);
+			await platform.sendText(
+				ref,
+				`Current model: ${await chats.currentModel()}\n\nAvailable models:\n${(await allModelSpecs()).join("\n")}\n\nSwitch with /model provider/id`,
+			);
 		} else {
 			const err = await chats.switchModel(arg);
 			await platform.sendText(ref, err ?? `Model set to ${arg} — new sessions use it`);
@@ -263,16 +438,23 @@ async function handleMessage(msg: ChatMessage, prompt: string, voice: boolean): 
 	}
 	if (prompt === "/start" || prompt === "/new") {
 		chats.reset(ref);
-		await platform.sendText(ref, "Fresh session started");
+		bashGate.reset(chatId);
+		await platform.sendText(ref, `Fresh session started — model: ${await chats.currentModel()}`);
 		return;
 	}
-	if (prompt.startsWith("/allow ")) {
-		const pattern = prompt.slice(7).trim();
-		if (!pattern) {
-			await platform.sendText(ref, "Usage: /allow <prefix> (e.g. /allow curl *)");
+	if (prompt === "/bash" || prompt === "/bash on" || prompt === "/bash off") {
+		if (prompt === "/bash on" || (prompt === "/bash" && bashGate.blocked(chatId))) {
+			bashGate.allow(chatId);
+			await platform.sendText(
+				ref,
+				"⚠️ Security warning: bash is now ENABLED for this session. The agent can run any shell command as your user until a new session (/new) starts. This weakens the prompt-injection guard, so only approve if you trust the agent's current inputs. Turn it back off with /bash off.",
+			);
 		} else {
-			addAllowedCommand(config, pattern);
-			await platform.sendText(ref, `Allowed: ${pattern}`);
+			bashGate.block(chatId);
+			await platform.sendText(
+				ref,
+				"Bash is now locked again for this session — the agent must ask you before every command.",
+			);
 		}
 		return;
 	}
@@ -370,6 +552,21 @@ async function onMessage(msg: ChatMessage): Promise<void> {
 	const platform = platforms[msg.ref.platform];
 	if (!platform) return;
 	try {
+		// Inline-button press (the Telegram /model menu): handle it like any other
+		// message — it interrupts a running turn and is serialized into the chat's
+		// chain so a model switch can't race a live turn.
+		if (msg.callback) {
+			const chatId = chatKey(msg.ref);
+			const active = activeTurns.get(chatId);
+			if (active) await active();
+			enqueue(chatId, () =>
+				handleCallback(msg.ref, msg.callback!).catch((err) => {
+					console.error("callback failed:", err);
+					return deliver(msg.ref, `Error: request failed — ${describeError(err)}. Please resend.`);
+				}),
+			);
+			return;
+		}
 		let prompt = msg.text ?? "";
 		if (msg.voiceFileId) {
 			if (!useStt || !platform.getVoice) {
@@ -437,7 +634,7 @@ async function onMessage(msg: ChatMessage): Promise<void> {
 }
 
 // Poll every configured platform concurrently. One platform dying (e.g. a
-// revoked token) logs and keeps the others running.
+// revoked token) still logs and keeps the others running.
 for (const platform of Object.values(platforms)) {
 	void (async () => {
 		try {
