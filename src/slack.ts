@@ -5,8 +5,8 @@
  * window. IM channels ("D…"/channel_type "im") count as 1:1 chats for /link.
  */
 
-import { fetchJson, sleep } from "./net.js";
-import { chunkText, MessageQueue, type ChatMessage, type ChatRef, type Platform } from "./platform.js";
+import { fetchJson, retry, sleep } from "./net.js";
+import { chunkText, MessageQueue, type ChatAttachment, type ChatMessage, type ChatRef, type Platform } from "./platform.js";
 
 const API = "https://slack.com/api";
 
@@ -19,6 +19,16 @@ interface SlackMessageEvent {
 	channel_type?: string;
 	text?: string;
 	ts?: string;
+	files?: SlackFile[];
+}
+
+interface SlackFile {
+	id?: string;
+	name?: string;
+	mimetype?: string;
+	size?: number;
+	/** Slack URL; used to download the file bytes. */
+	url_private?: string;
 }
 
 interface SlackSocketEvent {
@@ -37,12 +47,17 @@ export function createSlackPlatform(botToken: string, appToken: string, allowedC
 		const channel = evt.channel ?? "";
 		if (!channel || !allowed.has(channel)) return;
 		const text = evt.text?.trim();
-		if (!text) return;
+		const attachments: ChatAttachment[] = (evt.files ?? [])
+			.filter((f) => !!f.id)
+			.map((f) => ({ id: f.id!, name: f.name, mime: f.mimetype, size: f.size }));
+		// Drop messages with neither text nor any file — nothing to act on.
+		if (!text && attachments.length === 0) return;
 		const direct = evt.channel_type === "im" || (!evt.channel_type && channel.startsWith("D"));
 		deliver({
 			ref: { platform: "slack", chatId: channel },
 			userId: evt.user,
 			text,
+			attachments,
 			direct,
 		});
 	}
@@ -134,6 +149,26 @@ export function createSlackPlatform(botToken: string, appToken: string, allowedC
 			} catch {
 				// cosmetic; ignore failures
 			}
+		},
+		async getAttachment(att) {
+			// Resolve the private download URL from files.info, then fetch with the
+			// bot token (url_private requires the authorization header).
+			const info = await fetchJson<{ ok: boolean; file?: { url_private?: string }; error?: string }>(
+				`${API}/files.info`,
+				{
+					method: "POST",
+					headers: { authorization: `Bearer ${botToken}`, "content-type": "application/json" },
+					body: JSON.stringify({ file: att.id }),
+				},
+				"slack files.info",
+			);
+			const url = info.ok ? info.file?.url_private : undefined;
+			if (!url) throw new Error(`slack files.info: ${info.error ?? "no download url"}`);
+			return retry("slack file download", async () => {
+				const res = await fetch(url, { headers: { authorization: `Bearer ${botToken}` } });
+				if (!res.ok) throw new Error(`slack file download: ${res.status}`);
+				return Buffer.from(await res.arrayBuffer());
+			});
 		},
 	};
 }
