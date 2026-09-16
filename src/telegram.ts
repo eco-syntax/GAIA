@@ -6,7 +6,8 @@
 import { fetch, FormData as undiciFormData } from "undici";
 import { toTelegramHtml } from "./format.js";
 import { retry, sleep } from "./net.js";
-import { chunkText, type ChatMessage, type ChatRef, type InlineButton, type Platform } from "./platform.js";
+import { readBodyLimited } from "./web.js";
+import { chunkText, type ChatAttachment, type ChatMessage, type ChatRef, type InlineButton, type Platform } from "./platform.js";
 
 const API = "https://api.telegram.org/bot";
 
@@ -16,6 +17,9 @@ interface TgMessage {
 	chat: { id: number; type?: string };
 	text?: string;
 	voice?: { file_id: string };
+	document?: { file_id: string; file_name?: string; mime_type?: string; file_size?: number };
+	photo?: { file_id: string; file_size?: number }[];
+	video?: { file_id: string; file_name?: string; mime_type?: string; file_size?: number };
 	date?: number;
 }
 
@@ -88,6 +92,49 @@ export async function setMyCommands(
 	}
 }
 
+/** Fetch a Telegram file's bytes by file_id (shared by voice + attachments). */
+async function getFileBytes(token: string, fileId: string): Promise<Buffer> {
+	const file = (await tg(token, "getFile", { file_id: fileId })) as { file_path?: string };
+	if (!file.file_path) throw new Error("telegram getFile: no file_path");
+	return retry("telegram file download", async () => {
+		const res = await fetch(`https://api.telegram.org/file/bot${token}/${file.file_path}`);
+		if (!res.ok) throw new Error(`telegram file download: ${res.status}`);
+		// Bounded read: reject oversized Content-Length, cancel mid-stream at the cap.
+		const { buf } = await readBodyLimited(res);
+		return buf;
+	});
+}
+
+/** Pull attachment descriptors out of a Telegram message: documents (files, PDFs),
+ * photos (largest size available), videos. Voice is handled separately, not here. */
+function collectAttachments(msg: TgMessage): ChatAttachment[] {
+	const out: ChatAttachment[] = [];
+	if (msg.document?.file_id) {
+		out.push({
+			id: msg.document.file_id,
+			name: msg.document.file_name ?? "document",
+			mime: msg.document.mime_type,
+			size: msg.document.file_size,
+		});
+	}
+	if (msg.photo?.length) {
+		// photo is an array of sizes; the last entry is the largest.
+		const best = msg.photo[msg.photo.length - 1];
+		if (best?.file_id) {
+			out.push({ id: best.file_id, name: "photo.jpg", mime: "image/jpeg", size: best.file_size });
+		}
+	}
+	if (msg.video?.file_id) {
+		out.push({
+			id: msg.video.file_id,
+			name: msg.video.file_name ?? "video.mp4",
+			mime: msg.video.mime_type,
+			size: msg.video.file_size,
+		});
+	}
+	return out;
+}
+
 /** Telegram platform. Voice is Telegram-only: incoming voice notes are fetched
  * by file_id and replies can be sent as OGG/Opus voice notes. The /model menu
  * is also Telegram-only: inline-keyboard presses come through the same poll as
@@ -152,12 +199,19 @@ export function createTelegramPlatform(token: string, allowedChatIds: string[]):
 						}
 						const msg = u.message;
 						if (!msg?.from) continue;
-						if (!msg.text && !msg.voice) continue;
+						// A message with only an attachment (e.g. a PDF) has no text; keep
+						// it if any attachment type is present so it isn't silently dropped.
+						const attachments = collectAttachments(msg);
+						if (!msg.text && !msg.voice && attachments.length === 0) continue;
 						const chatId = String(msg.chat.id);
 						if (!allowed.has(chatId)) continue;
 						const date = msg.date;
 						if (date !== undefined && date < startedAt) continue;
-						const fp = `${chatId}:${date}:${msg.text ?? `voice:${msg.voice!.file_id.slice(0, 20)}`}`;
+						// Fingerprint on whichever content the message carries. For a file-only
+						// message use the attachment ids so a redelivered copy still dedups.
+						const fpContent = msg.text
+							?? (msg.voice ? `voice:${msg.voice.file_id.slice(0, 20)}` : `file:${attachments.map((a) => a.id).join(",").slice(0, 40)}`);
+						const fp = `${chatId}:${date}:${fpContent}`;
 						if (!remember(fp)) continue;
 						yield {
 							ref: { platform: "telegram", chatId },
@@ -165,6 +219,7 @@ export function createTelegramPlatform(token: string, allowedChatIds: string[]):
 							userName: msg.from.first_name ?? msg.from.username,
 							text: msg.text,
 							voiceFileId: msg.voice?.file_id,
+							attachments,
 							direct: msg.chat.type === "private",
 						};
 					}
@@ -219,13 +274,10 @@ export function createTelegramPlatform(token: string, allowedChatIds: string[]):
 			}
 		},
 		async getVoice(fileId: string): Promise<Buffer> {
-			const file = (await tg(token, "getFile", { file_id: fileId })) as { file_path?: string };
-			if (!file.file_path) throw new Error("telegram getFile: no file_path");
-			return retry("telegram file download", async () => {
-				const res = await fetch(`https://api.telegram.org/file/bot${token}/${file.file_path}`);
-				if (!res.ok) throw new Error(`telegram file download: ${res.status}`);
-				return Buffer.from(await res.arrayBuffer());
-			});
+			return getFileBytes(token, fileId);
+		},
+		async getAttachment(att) {
+			return getFileBytes(token, att.id);
 		},
 		// ---- /model inline menu (issue #90) ----
 		async sendMenu(ref: ChatRef, text: string, rows: InlineButton[][]): Promise<string | undefined> {

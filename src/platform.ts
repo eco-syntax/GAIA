@@ -26,12 +26,31 @@ export interface ChatMessage {
 	text?: string;
 	/** Voice attachment id (Telegram file_id); platforms without voice never set it. */
 	voiceFileId?: string;
+	/** Attachments carried by the message (documents, files, images). The agent
+	 * can download their bytes via the platform's getAttachment() and read their
+	 * text through the open_attachment tool. */
+	attachments?: ChatAttachment[];
 	/** True only in a 1:1 DM between the agent and a single user — the only
 	 * place identity linking (/link) is allowed. */
 	direct: boolean;
 	/** Inline-keyboard button press (Telegram /model menu). Set instead of a
 	 * normal message; only Telegram yields these. */
 	callback?: { id: string; data: string; messageId?: string };
+}
+
+/** A file attached to a message. The download key is platform-specific; the
+ * platform's getAttachment() knows how to turn it into bytes. */
+export interface ChatAttachment {
+	/** Platform-specific id/url used by getAttachment() to fetch the bytes. */
+	id: string;
+	/** Original filename, when the platform provides one. */
+	name?: string;
+	/** MIME type, when the platform provides one. */
+	mime?: string;
+	/** Approximate size in bytes, when the platform provides one. */
+	size?: number;
+	/** Direct download URL, when the platform provides one (Discord CDN). */
+	url?: string;
 }
 
 export interface Platform {
@@ -48,6 +67,9 @@ export interface Platform {
 	sendVoice?(ref: ChatRef, data: Buffer, mime: string): Promise<void>;
 	/** Fetch a voice attachment by id (Telegram file_id); voice platforms only. */
 	getVoice?(fileId: string): Promise<Buffer>;
+	/** Fetch an attachment's bytes by its platform-specific id. Platforms that
+	 * can receive attachments implement this. */
+	getAttachment?(att: ChatAttachment): Promise<Buffer>;
 	/** Send text with an inline keyboard (Telegram's /model menu). Returns the
 	 * message id so the menu can be edited in place. Platforms without menus
 	 * omit it and fall back to a plain text list. */

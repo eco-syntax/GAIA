@@ -24,6 +24,8 @@ import { loadSchedules, listSchedules } from "./scheduleStore.js";
 import { synthesize, ttsAvailable } from "./tts.js";
 import { transcribe, sttAvailable } from "./stt.js";
 import { chatKey, type ChatMessage, type ChatRef, type InlineButton, type Platform } from "./platform.js";
+import { saveAttachment } from "./attachments.js";
+import { basename } from "node:path";
 import { bashGate } from "./security.js";
 
 const config = loadConfig();
@@ -579,6 +581,27 @@ async function onMessage(msg: ChatMessage): Promise<void> {
 				stopTyping();
 			}
 			if (!prompt) return; // empty/silent voice note
+		}
+		// Download any attached files into this chat's attachment inbox and tell
+		// the agent what arrived so it can read them with open_attachment. Text
+		// captions ride along; a file-only message still reaches the agent instead
+		// of being dropped (issue #108).
+		if (msg.attachments?.length && platform.getAttachment) {
+			const files: string[] = [];
+			for (const att of msg.attachments) {
+				try {
+					const { path } = await saveAttachment(msg.ref, att, platform);
+					files.push(basename(path)); // the on-disk name the agent can open
+				} catch (err) {
+					console.error("attachment download failed:", err);
+				}
+			}
+			if (files.length) {
+				const listing = files.map((f) => `- ${f}`).join("\n");
+				prompt = prompt
+					? `${prompt}\n\n(The user attached file(s):\n${listing}\nUse open_attachment to read them.)`
+					: `The user sent file attachment(s) with no message text:\n${listing}\nRead them with open_attachment and respond appropriately.`;
+			}
 		}
 		// Interrupt-and-redirect: a new message aborts the running turn first
 		// (Hermes-style), so users never queue behind a runaway turn.

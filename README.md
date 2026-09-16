@@ -33,6 +33,12 @@ scheduled tasks, web research, and local voice — built entirely on pi's SDK, n
 - **Voice**: replies as Telegram voice notes via local `piper` (+ ffmpeg for OGG/Opus). Incoming
   voice notes are transcribed locally via whisper.cpp (set `"whisperModel": "/path/to/ggml-model.bin"`
   in the config; needs a `whisper-cli`/`whisper` binary and ffmpeg on PATH).
+- **Attachments**: documents, images, and files attached to a message (Telegram, Slack, Discord,
+  and Matrix) are downloaded into a per-chat inbox and offered to the agent through the
+  `open_attachment` tool, so a file-only message (e.g. a lone PDF) is processed instead of being
+  ignored. Text files (logs, configs, code) are returned inline (capped like `fetchpage`); binary
+  files report their mime/size. Files are capped and the tool reads only its own inbox — it never
+  reopens the ungated file-tool hole the chat sessions deliberately close.
 - **Bash approval gate**: the built-in bash tool is shadowed by a deny-by-default gate
   (`src/security.ts`). There is no command allowlist — every bash command is
   refused until you approve it for the current session with `/bash` (which shows

@@ -5,11 +5,20 @@
  * (DM) counts as a 1:1 chat for /link.
  */
 
-import { fetchJson, sleep } from "./net.js";
-import { chunkText, MessageQueue, type ChatMessage, type ChatRef, type Platform } from "./platform.js";
+import { fetchJson, retry, sleep } from "./net.js";
+import { readBodyLimited } from "./web.js";
+import { chunkText, MessageQueue, type ChatAttachment, type ChatMessage, type ChatRef, type Platform } from "./platform.js";
 
 const API = "https://discord.com/api/v10";
 const INTENTS = (1 << 9) | (1 << 12) | (1 << 15); // GUILD_MESSAGES, DIRECT_MESSAGES, MESSAGE_CONTENT
+
+interface DiscordAttachment {
+	id: string;
+	filename?: string;
+	content_type?: string;
+	size?: number;
+	url?: string;
+}
 
 interface DiscordMessage {
 	id: string;
@@ -18,6 +27,7 @@ interface DiscordMessage {
 	channel_type?: number;
 	author?: { id: string; username?: string; bot?: boolean };
 	content?: string;
+	attachments?: DiscordAttachment[];
 }
 
 interface GatewayPayload {
@@ -82,12 +92,17 @@ export function createDiscordPlatform(token: string, allowedChannelIds: string[]
 		if (m.type !== 0) return; // only default messages (not pins, replies are type 19 → skip)
 		if (!allowed.has(m.channel_id)) return;
 		const text = m.content?.trim();
-		if (!text) return;
+		const attachments: ChatAttachment[] = (m.attachments ?? [])
+			.filter((a) => !!a.id && !!a.url)
+			.map((a) => ({ id: a.id, name: a.filename, mime: a.content_type, size: a.size, url: a.url }));
+		// Drop messages with neither text nor any attachment — nothing to act on.
+		if (!text && attachments.length === 0) return;
 		deliver({
 			ref: { platform: "discord", chatId: m.channel_id },
 			userId: m.author.id,
 			userName: m.author.username,
 			text,
+			attachments,
 			direct: m.channel_type === 1, // DM; group DMs (3) are not 1:1
 		});
 	}
@@ -158,6 +173,17 @@ export function createDiscordPlatform(token: string, allowedChannelIds: string[]
 			} catch {
 				// cosmetic; ignore failures
 			}
+		},
+		async getAttachment(att) {
+			// Discord attachment URLs are CDN links requiring the bot's authorization.
+			if (!att.url) throw new Error("discord attachment: no download url");
+			return retry("discord file download", async () => {
+				const res = await fetch(att.url!, { headers: { authorization: `Bot ${token}` } });
+				if (!res.ok) throw new Error(`discord file download: ${res.status}`);
+				// Bounded read: reject oversized Content-Length, cancel mid-stream at the cap.
+				const { buf } = await readBodyLimited(res);
+				return buf;
+			});
 		},
 	};
 }

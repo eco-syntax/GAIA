@@ -4,8 +4,9 @@
  * two joined members (the bot + one user) counts as a 1:1 DM for /link.
  */
 
-import { fetchJson, sleep } from "./net.js";
-import { chunkText, type ChatMessage, type ChatRef, type Platform } from "./platform.js";
+import { fetchJson, retry, sleep } from "./net.js";
+import { readBodyLimited } from "./web.js";
+import { chunkText, type ChatAttachment, type ChatMessage, type ChatRef, type Platform } from "./platform.js";
 
 interface MatrixSync {
 	next_batch?: string;
@@ -21,7 +22,17 @@ interface MatrixEvent {
 	type?: string;
 	event_id?: string;
 	sender?: string;
-	content?: { msgtype?: string; body?: string };
+	content?: {
+		msgtype?: string;
+		body?: string;
+		url?: string; // mxc:// media URI for m.file/m.image/m.video/m.audio
+		info?: { mimetype?: string; size?: number };
+	};
+}
+
+/** Matrix msgtypes that carry a media attachment (as opposed to plain text). */
+function isFileMsgtype(msgtype: string | undefined): boolean {
+	return msgtype === "m.file" || msgtype === "m.image" || msgtype === "m.video" || msgtype === "m.audio";
 }
 
 export function createMatrixPlatform(
@@ -61,13 +72,24 @@ export function createMatrixPlatform(
 							if (seen.has(ev.event_id)) continue;
 							seen.set(ev.event_id, true);
 							if (seen.size > 1000) seen.delete(seen.keys().next().value!);
-							if (ev.content?.msgtype !== "m.text" && ev.content?.msgtype !== "m.notice") continue;
-							const text = ev.content.body?.trim();
-							if (!text) continue;
+							// Attachments arrive as discrete msgtypes (text/notice are handled below);
+							// a file-only message must not be dropped.
+							const isFile = isFileMsgtype(ev.content?.msgtype);
+							if (ev.content?.msgtype !== "m.text" && ev.content?.msgtype !== "m.notice" && !isFile) continue;
+							const text = ev.content?.body?.trim();
+							const attachments = isFile && ev.content?.url ? [{
+								id: ev.content.url,
+								// mxc://server/mediaid → name from body, mime/size from info.
+								name: text || "attachment",
+								mime: ev.content.info?.mimetype,
+								size: ev.content.info?.size,
+							} as ChatAttachment] : [];
+							if (!text && attachments.length === 0) continue;
 							yield {
 								ref: { platform: "matrix", chatId: roomId },
 								userId: ev.sender,
 								text,
+								attachments,
 								direct,
 							};
 						}
@@ -118,6 +140,26 @@ export function createMatrixPlatform(
 			} catch {
 				// cosmetic; ignore failures
 			}
+		},
+		async getAttachment(att) {
+			// mxc://server/mediaId → download through the configured homeserver (it
+			// relays from the originating server, so we never dial an arbitrary host).
+			const mxc = /^mxc:\/\/([^/]+)\/([^/]+)$/.exec(att.id);
+			if (!mxc) throw new Error(`matrix attachment: malformed media uri ${att.id}`);
+			const [, server, mediaId] = mxc;
+			// The regex guarantees both capture groups are present.
+			const fileServer = server!;
+			const fileId = mediaId!;
+			return retry("matrix file download", async () => {
+				const res = await fetch(
+					`${base}/_matrix/client/v3/media/download/${encodeURIComponent(fileServer)}/${encodeURIComponent(fileId)}`,
+					{ headers },
+				);
+				if (!res.ok) throw new Error(`matrix file download: ${res.status}`);
+				// Bounded read: reject oversized Content-Length, cancel mid-stream at the cap.
+				const { buf } = await readBodyLimited(res);
+				return buf;
+			});
 		},
 	};
 }

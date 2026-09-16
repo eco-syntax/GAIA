@@ -16,6 +16,7 @@ import { webTools } from "./web.js";
 import { loadMemory, memoryTools, memoryFileForChat } from "./memory.js";
 import { bashGateTool, NO_CHAT } from "./security.js";
 import { scheduleTool } from "./schedules.js";
+import { attachmentTool } from "./attachments.js";
 
 /** Built-in tools that are ungated and must be kept OUT of chat sessions.
  * pi's default set is [read, bash, edit, write]; read resolves absolute paths
@@ -166,6 +167,9 @@ export class ChatSessions {
 					tainted = true;
 				}),
 				scheduleTool(ref),
+				attachmentTool(ref, () => {
+					tainted = true;
+				}),
 			],
 			// Deny the ungated built-in file tools (see CHAT_EXCLUDED_TOOLS).
 			// Our custom "read" (taintOnRead) and "bash" (bashGateTool) shadow
