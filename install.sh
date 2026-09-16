@@ -17,6 +17,11 @@ LLAMA_VERSION=b10823 # pinned llama.cpp release; bump to update the bundled serv
 # whisper.cpp prebuilt bins now ship only on nightly tags (the v1.9.x "latest" releases attach no
 # binaries); b5130 is the pinned tag — never use releases/latest, it is a moving target
 WHISPER_VERSION=b5130
+# HuggingFace model files are pinned to a specific commit (never `resolve/main`, a moving target)
+# so installs are reproducible and the bytes are stable; the checksums below verify them like
+# every other pinned asset. Bump the commit AND the corresponding checksum together.
+PIPER_VOICES_COMMIT=1162a9173d0ce503555aed757976b7a9912eae4c
+WHISPER_MODEL_COMMIT=5359861c739e955e79d9a303bcbc70fb988958b1
 GREENPI_REPO="${GREENPI_REPO:-https://github.com/ColbyBrown/GreenPi}"
 GREENPI_SRC="${GREENPI_SRC:-$HOME/GreenPi}"
 GREENPI_HOME="${GREENPI_HOME:-$HOME/.greenpi}"
@@ -49,6 +54,18 @@ whisper_sha() {
 	case "$1" in
 		whisper-bin-ubuntu-x64.tar.gz) echo 53e7fd8b5764edad916b8848dd0af6abb1ff1d3b86c899e79c78652412536c32 ;;
 		whisper-bin-ubuntu-arm64.tar.gz) echo 93532a0e3777f26f041ffa358ee77dd88b1a33a86847c1990745327ff335a5d6 ;;
+	esac
+}
+# SHA-256 of the pinned HuggingFace model files (see PIPER_VOICES_COMMIT / WHISPER_MODEL_COMMIT).
+voice_model_sha() {
+	case "$1" in
+		en_US-lessac-medium.onnx) echo 5efe09e69902187827af646e1a6e9d269dee769f9877d17b16b1b46eeaaf019f ;;
+		en_US-lessac-medium.onnx.json) echo efe19c417bed055f2d69908248c6ba650fa135bc868b0e6abb3da181dab690a0 ;;
+	esac
+}
+whisper_model_sha() {
+	case "$1" in
+		ggml-base.en.bin) echo a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002 ;;
 	esac
 }
 
@@ -312,9 +329,15 @@ else
 			echo "piper voice: already downloaded"
 		else
 			echo "downloading en_US-lessac-medium voice (~63 MB)"
-			vbase=https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium
-			curl -fL "$vbase/en_US-lessac-medium.onnx" -o "$HOME/.pi-gateway/voices/en_US-lessac-medium.onnx"
-			curl -fL "$vbase/en_US-lessac-medium.onnx.json" -o "$HOME/.pi-gateway/voices/en_US-lessac-medium.onnx.json"
+			vbase=https://huggingface.co/rhasspy/piper-voices/resolve/${PIPER_VOICES_COMMIT}/en/en_US/lessac/medium
+			tmpv=$(mktemp -d)
+			curl -fL "$vbase/en_US-lessac-medium.onnx" -o "$tmpv/en_US-lessac-medium.onnx"
+			verify_sha256 "$tmpv/en_US-lessac-medium.onnx" "$(voice_model_sha en_US-lessac-medium.onnx)" "en_US-lessac-medium.onnx"
+			curl -fL "$vbase/en_US-lessac-medium.onnx.json" -o "$tmpv/en_US-lessac-medium.onnx.json"
+			verify_sha256 "$tmpv/en_US-lessac-medium.onnx.json" "$(voice_model_sha en_US-lessac-medium.onnx.json)" "en_US-lessac-medium.onnx.json"
+			cp "$tmpv/en_US-lessac-medium.onnx" "$HOME/.pi-gateway/voices/en_US-lessac-medium.onnx"
+			cp "$tmpv/en_US-lessac-medium.onnx.json" "$HOME/.pi-gateway/voices/en_US-lessac-medium.onnx.json"
+			rm -rf "$tmpv"
 		fi
 		PIPER_VOICE=$HOME/.pi-gateway/voices/en_US-lessac-medium.onnx
 
@@ -351,8 +374,12 @@ else
 			echo "whisper model: already downloaded"
 		else
 			echo "downloading ggml-base.en (~148 MB)"
-			curl -fL https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin \
-				-o "$HOME/.pi-gateway/whisper/ggml-base.en.bin"
+			tmpw=$(mktemp -d)
+			curl -fL "https://huggingface.co/ggerganov/whisper.cpp/resolve/${WHISPER_MODEL_COMMIT}/ggml-base.en.bin" \
+				-o "$tmpw/ggml-base.en.bin"
+			verify_sha256 "$tmpw/ggml-base.en.bin" "$(whisper_model_sha ggml-base.en.bin)" "ggml-base.en.bin"
+			cp "$tmpw/ggml-base.en.bin" "$HOME/.pi-gateway/whisper/ggml-base.en.bin"
+			rm -rf "$tmpw"
 		fi
 		WHISPER_MODEL=$HOME/.pi-gateway/whisper/ggml-base.en.bin
 
