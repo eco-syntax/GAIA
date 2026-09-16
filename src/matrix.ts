@@ -55,6 +55,9 @@ export function createMatrixPlatform(
 						const direct = room.summary?.joined_member_count === 2;
 						for (const ev of room.timeline?.events ?? []) {
 							if (ev.type !== "m.room.message" || !ev.event_id || !ev.sender) continue;
+							// Ignore the bot's own outbound messages, which are echoed back
+							// by /sync; otherwise each reply self-triggers another turn.
+							if (ev.sender === userId) continue;
 							if (seen.has(ev.event_id)) continue;
 							seen.set(ev.event_id, true);
 							if (seen.size > 1000) seen.delete(seen.keys().next().value!);
