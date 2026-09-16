@@ -4,7 +4,7 @@ import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent
 import { mkdirSync, writeFileSync } from "node:fs";
 import { lookup } from "node:dns/promises";
 import dns from "node:dns";
-import { isIP } from "node:net";
+import { BlockList, isIP } from "node:net";
 import type { LookupFunction } from "node:net";
 import { join } from "node:path";
 import { stateDir, ensureStateDir } from "./config.js";
@@ -31,102 +31,61 @@ const MAX_REDIRECTS = 5;
 // actually opened against, which closes the DNS-rebinding (TOCTOU) window.
 // ============================================================================
 
-function isPrivateIPv4(ip: string): boolean {
-	const [a = 0, b = 0, c = 0] = ip.split(".").map(Number);
-	return (
-		a === 0 || // 0.0.0.0/8 "this network"
-		a === 10 || // 10.0.0.0/8 private
-		a === 127 || // 127.0.0.0/8 loopback
-		(a === 100 && b >= 64 && b <= 127) || // 100.64.0.0/10 CGNAT
-		(a === 169 && b === 254) || // 169.254.0.0/16 link-local / cloud metadata
-		(a === 172 && b >= 16 && b <= 31) || // 172.16.0.0/12 private
-		(a === 192 && b === 0 && (c === 0 || c === 2)) || // 192.0.0.0/24, 192.0.2.0/24
-		(a === 192 && b === 88 && c === 99) || // 192.88.99.0/24 6to4 relay
-		(a === 192 && b === 168) || // 192.168.0.0/16 private
-		(a === 198 && (b === 18 || b === 19)) || // 198.18.0.0/15 benchmarking
-		(a === 198 && b === 51 && c === 100) || // 198.51.100.0/24 TEST-NET-2
-		(a === 203 && b === 0 && c === 113) || // 203.0.113.0/24 TEST-NET-3
-		a >= 224 // multicast (224/4) + reserved (240/4)
-	);
-}
+// Non-public destinations, encoded as CIDRs in Node's built-in net.BlockList
+// (the same ranges the previous hand-rolled table/parser covered).
+const privateBlockList = new BlockList();
+privateBlockList.addSubnet("0.0.0.0", 8, "ipv4"); // "this network"
+privateBlockList.addSubnet("10.0.0.0", 8, "ipv4"); // private
+privateBlockList.addSubnet("127.0.0.0", 8, "ipv4"); // loopback
+privateBlockList.addSubnet("100.64.0.0", 10, "ipv4"); // CGNAT
+privateBlockList.addSubnet("169.254.0.0", 16, "ipv4"); // link-local / cloud metadata
+privateBlockList.addSubnet("172.16.0.0", 12, "ipv4"); // private
+privateBlockList.addSubnet("192.0.0.0", 24, "ipv4"); // IETF protocol assignments
+privateBlockList.addSubnet("192.0.2.0", 24, "ipv4"); // TEST-NET-1
+privateBlockList.addSubnet("192.88.99.0", 24, "ipv4"); // 6to4 relay
+privateBlockList.addSubnet("192.168.0.0", 16, "ipv4"); // private
+privateBlockList.addSubnet("198.18.0.0", 15, "ipv4"); // benchmarking
+privateBlockList.addSubnet("198.51.100.0", 24, "ipv4"); // TEST-NET-2
+privateBlockList.addSubnet("203.0.113.0", 24, "ipv4"); // TEST-NET-3
+privateBlockList.addSubnet("224.0.0.0", 3, "ipv4"); // multicast (224/4) + reserved (240/4)
+privateBlockList.addSubnet("::", 128, "ipv6");
+privateBlockList.addSubnet("::1", 128, "ipv6");
+privateBlockList.addSubnet("fe80::", 10, "ipv6"); // link-local
+privateBlockList.addSubnet("fc00::", 7, "ipv6"); // unique-local
+privateBlockList.addSubnet("ff00::", 8, "ipv6"); // multicast
 
 /**
- * Expand an IPv6 literal to its 16 bytes (without a zone id). Handles the two
- * spellings of an embedded IPv4 address: the dotted-quad form (e.g.
- * `0:0:0:0:0:ffff:127.0.0.1`, a 7-group literal where the last group is four
- * octets) as well as the explicit hex form (`::ffff:7f00:1`). A dotted-quad
- * group is split into its four octets (2 bytes each), not `parseInt(group, 16)`,
- * which would misread it.
+ * Extract the embedded IPv4 from an IPv4-mapped (::ffff:0:0/96) or 6to4
+ * (2002::/16) address so it can be checked against the IPv4 ranges; null for
+ * any other IPv6 literal.
  */
-function ipv6ToBytes(ip: string): number[] | null {
-	const parts = ip.split("%")[0]!.split("::");
-	if (parts.length > 2) return null;
-	const head = parts[0] ? parts[0].split(":") : [];
-	const tail = parts.length === 2 && parts[1] ? parts[1].split(":") : [];
-
-	// A group is normally a 16-bit hex value (1 group = 2 bytes), but a group
-	// containing dots is an embedded IPv4 dotted-quad and expands to 2 groups.
-	const parseGroup = (g: string): number[] | null => {
-		if (g.includes(".")) {
-			const octets = g.split(".").map(Number);
-			if (octets.length !== 4 || octets.some((o) => Number.isNaN(o) || o < 0 || o > 255)) return null;
-			return [(octets[0]! << 8) | octets[1]!, (octets[2]! << 8) | octets[3]!];
-		}
-		const value = parseInt(g, 16);
-		if (Number.isNaN(value) || value < 0 || value > 0xffff) return null;
-		return [value];
-	};
-
-	const parseSide = (groups: string[]): number[] | null => {
-		const out: number[] = [];
-		for (const g of groups) {
-			const vals = parseGroup(g);
-			if (vals === null) return null;
-			out.push(...vals);
-		}
-		return out;
-	};
-
-	const headGroups = parseSide(head);
-	const tailGroups = parseSide(tail);
-	if (headGroups === null || tailGroups === null) return null;
-
-	const missing = 8 - headGroups.length - tailGroups.length;
-	if (missing < 0) return null;
-	if (parts.length === 1 && headGroups.length !== 8) return null;
-	const groups = [...headGroups, ...Array<number>(parts.length === 2 ? missing : 0).fill(0), ...tailGroups];
-	if (groups.length !== 8) return null;
-	const bytes: number[] = [];
-	for (const group of groups) {
-		bytes.push(group >> 8, group & 0xff);
+function unwrapIPv4(ip: string): string | null {
+	const bare = ip.split("%")[0]!.toLowerCase();
+	const mapped = /^::ffff:(.+)$/.exec(bare);
+	if (mapped) {
+		const v4 = mapped[1]!;
+		if (v4.includes(".")) return v4;
+		const [hi = "0", lo = "0"] = v4.split(":");
+		return `${parseInt(hi, 16) >> 8}.${parseInt(hi, 16) & 0xff}.${parseInt(lo, 16) >> 8}.${parseInt(lo, 16) & 0xff}`;
 	}
-	return bytes;
-}
-
-function isPrivateIPv6(ip: string): boolean {
-	const bytes = ipv6ToBytes(ip);
-	if (!bytes) return true; // fail closed: unparseable literals must not pass the guard
-	if (bytes.every((b) => b === 0)) return true; // ::
-	if (bytes.slice(0, 15).every((b) => b === 0) && bytes[15] === 1) return true; // ::1
-	if (bytes[0] === 0xfe && (bytes[1]! & 0xc0) === 0x80) return true; // fe80::/10 link-local
-	if ((bytes[0]! & 0xfe) === 0xfc) return true; // fc00::/7 unique-local
-	if (bytes[0] === 0xff) return true; // ff00::/8 multicast
-	// IPv4-mapped (::ffff:0:0/96) and IPv4-compatible (::/96)
-	if (bytes.slice(0, 10).every((b) => b === 0) && (bytes[10] === 0xff || bytes[10] === 0) && (bytes[11] === 0xff || bytes[11] === 0)) {
-		return isPrivateIPv4(`${bytes[12]}.${bytes[13]}.${bytes[14]}.${bytes[15]}`);
+	const t = /^2002:(?:([0-9a-f]{1,4}):)?([0-9a-f]{1,4})?/.exec(bare);
+	if (t) {
+		const hi = t[1] ? parseInt(t[1]!, 16) : 0;
+		const lo = t[2] ? parseInt(t[2]!, 16) : 0;
+		return `${hi >> 8}.${hi & 0xff}.${lo >> 8}.${lo & 0xff}`;
 	}
-	// 6to4 (2002::/16) embeds the IPv4 address in bytes 2-5
-	if (bytes[0] === 0x20 && bytes[1] === 0x02) {
-		return isPrivateIPv4(`${bytes[2]}.${bytes[3]}.${bytes[4]}.${bytes[5]}`);
-	}
-	return false;
+	return null;
 }
 
 export function isPrivateAddress(ip: string): boolean {
 	const bare = ip.replace(/^\[|\]$/g, "");
 	const family = isIP(bare);
-	if (family === 4) return isPrivateIPv4(bare);
-	if (family === 6) return isPrivateIPv6(bare);
+	if (family === 4) return privateBlockList.check(bare, "ipv4");
+	if (family === 6) {
+		const v4 = unwrapIPv4(bare);
+		if (v4) return privateBlockList.check(v4, "ipv4");
+		return privateBlockList.check(bare, "ipv6");
+	}
 	return true; // not an IP — treat as unsafe
 }
 
