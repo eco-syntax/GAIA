@@ -102,8 +102,11 @@ function extractText(att: ChatAttachment, data: Buffer): string {
 /**
  * The open_attachment tool for chat sessions. Reads a previously-downloaded
  * attachment from this chat's inbox by name. Safe: scoped to the inbox dir.
+ * `taint` marks the session as having consumed untrusted content (attachment
+ * bytes are user-supplied data, never instructions), matching webTools and
+ * bashGateTool so injected instructions can't silently steer memory saves.
  */
-export function attachmentTool(ref: ChatRef): ToolDefinition {
+export function attachmentTool(ref: ChatRef, taint: () => void): ToolDefinition {
 	const dir = inboxDir(ref);
 	const describe = () => {
 		if (!existsSync(dir)) return "(none)";
@@ -126,6 +129,9 @@ export function attachmentTool(ref: ChatRef): ToolDefinition {
 			name: Type.String({ description: "Inbox filename to open, or \"list\" for the available attachments." }),
 		}),
 		async execute(_id, params) {
+			// Anything the tool returns comes from an uploaded file — untrusted data,
+			// never instructions. Taint like every other untrusted-content tool.
+			taint();
 			if (params.name.trim().toLowerCase() === "list") {
 				return {
 					content: [

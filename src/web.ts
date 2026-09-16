@@ -189,13 +189,17 @@ async function safeFetch(url: string): Promise<Response> {
 	throw new Error(`too many redirects fetching ${url}`);
 }
 
+/** Minimal response shape readBodyLimited needs; satisfied by both undici's
+ * and the DOM's Response, so any transport fetch flavor can use it. */
+type BoundedBody = { body: { getReader(): ReadableStreamDefaultReader<Uint8Array>; cancel(reason?: unknown): Promise<void> } | null; headers: { get(name: string): string | null } };
+
 /**
  * Drain a response body with a hard byte cap. Rejects up-front when
  * Content-Length exceeds the cap and stops mid-stream once the cap is hit, so
  * an attacker-controlled multi-GB page can neither OOM the process nor fill
  * the state disk. Returns the bytes read and whether the cap was hit.
  */
-export async function readBodyLimited(res: Response): Promise<{ buf: Buffer; truncated: boolean }> {
+export async function readBodyLimited(res: BoundedBody): Promise<{ buf: Buffer; truncated: boolean }> {
 	const declared = res.headers.get("content-length");
 	if (declared) {
 		const n = Number(declared);

@@ -167,7 +167,9 @@ export class ChatSessions {
 					tainted = true;
 				}),
 				scheduleTool(ref),
-				attachmentTool(ref),
+				attachmentTool(ref, () => {
+					tainted = true;
+				}),
 			],
 			// Deny the ungated built-in file tools (see CHAT_EXCLUDED_TOOLS).
 			// Our custom "read" (taintOnRead) and "bash" (bashGateTool) shadow

@@ -6,6 +6,7 @@
  */
 
 import { fetchJson, retry, sleep } from "./net.js";
+import { readBodyLimited } from "./web.js";
 import { chunkText, MessageQueue, type ChatAttachment, type ChatMessage, type ChatRef, type Platform } from "./platform.js";
 
 const API = "https://discord.com/api/v10";
@@ -179,7 +180,9 @@ export function createDiscordPlatform(token: string, allowedChannelIds: string[]
 			return retry("discord file download", async () => {
 				const res = await fetch(att.url!, { headers: { authorization: `Bot ${token}` } });
 				if (!res.ok) throw new Error(`discord file download: ${res.status}`);
-				return Buffer.from(await res.arrayBuffer());
+				// Bounded read: reject oversized Content-Length, cancel mid-stream at the cap.
+				const { buf } = await readBodyLimited(res);
+				return buf;
 			});
 		},
 	};

@@ -23,16 +23,23 @@ const stubPlatform = {
 };
 
 // 1. A text attachment downloads into the inbox and is readable via the tool.
+// Reading an attachment is reading untrusted content, so the tool must taint
+// the session (same contract as webTools / bashGateTool / taintOnRead).
 const text = await saveAttachment(ref, { id: "cfg", name: "service.conf", mime: "text/plain" }, stubPlatform);
 assert.ok(existsSync(text.path), "text attachment should be saved to the inbox");
-const tool = attachmentTool(ref);
+let tainted = false;
+const tool = attachmentTool(ref, () => {
+	tainted = true;
+});
 const opened = await tool.execute("t", { name: "service.conf" });
 assert.match(opened.content[0].text, /greeting=hello/, "tool should return the file's text");
 assert.match(opened.content[0].text, /mode=enabled/, "tool should return the whole text content");
+assert.ok(tainted, "open_attachment must taint the session on any read");
 
-// 2. 'list' enumerates the inbox.
+// 2. 'list' enumerates the inbox (and also taints: filenames are untrusted too).
 const list = await tool.execute("t", { name: "list" });
 assert.match(list.content[0].text, /service\.conf/, "list should show the downloaded file");
+assert.ok(tainted, "list must taint too");
 
 // 3. A binary attachment (PDF) is saved but not misreported as readable text.
 const pdf = await saveAttachment(ref, { id: "pdf", name: "report.pdf", mime: "application/pdf" }, stubPlatform);

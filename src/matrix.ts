@@ -5,6 +5,7 @@
  */
 
 import { fetchJson, retry, sleep } from "./net.js";
+import { readBodyLimited } from "./web.js";
 import { chunkText, type ChatAttachment, type ChatMessage, type ChatRef, type Platform } from "./platform.js";
 
 interface MatrixSync {
@@ -152,7 +153,9 @@ export function createMatrixPlatform(
 					{ headers },
 				);
 				if (!res.ok) throw new Error(`matrix file download: ${res.status}`);
-				return Buffer.from(await res.arrayBuffer());
+				// Bounded read: reject oversized Content-Length, cancel mid-stream at the cap.
+				const { buf } = await readBodyLimited(res);
+				return buf;
 			});
 		},
 	};

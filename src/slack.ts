@@ -6,6 +6,7 @@
  */
 
 import { fetchJson, retry, sleep } from "./net.js";
+import { readBodyLimited } from "./web.js";
 import { chunkText, MessageQueue, type ChatAttachment, type ChatMessage, type ChatRef, type Platform } from "./platform.js";
 
 const API = "https://slack.com/api";
@@ -167,7 +168,9 @@ export function createSlackPlatform(botToken: string, appToken: string, allowedC
 			return retry("slack file download", async () => {
 				const res = await fetch(url, { headers: { authorization: `Bearer ${botToken}` } });
 				if (!res.ok) throw new Error(`slack file download: ${res.status}`);
-				return Buffer.from(await res.arrayBuffer());
+				// Bounded read: reject oversized Content-Length, cancel mid-stream at the cap.
+				const { buf } = await readBodyLimited(res);
+				return buf;
 			});
 		},
 	};

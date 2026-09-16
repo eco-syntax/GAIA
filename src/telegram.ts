@@ -6,6 +6,7 @@
 import { fetch, FormData as undiciFormData } from "undici";
 import { toTelegramHtml } from "./format.js";
 import { retry, sleep } from "./net.js";
+import { readBodyLimited } from "./web.js";
 import { chunkText, type ChatAttachment, type ChatMessage, type ChatRef, type InlineButton, type Platform } from "./platform.js";
 
 const API = "https://api.telegram.org/bot";
@@ -98,7 +99,9 @@ async function getFileBytes(token: string, fileId: string): Promise<Buffer> {
 	return retry("telegram file download", async () => {
 		const res = await fetch(`https://api.telegram.org/file/bot${token}/${file.file_path}`);
 		if (!res.ok) throw new Error(`telegram file download: ${res.status}`);
-		return Buffer.from(await res.arrayBuffer());
+		// Bounded read: reject oversized Content-Length, cancel mid-stream at the cap.
+		const { buf } = await readBodyLimited(res);
+		return buf;
 	});
 }
 
