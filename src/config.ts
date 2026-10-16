@@ -26,6 +26,14 @@ export function scheduleChatRef(s: Schedule): ChatRef {
 	return { platform: s.platform ?? "telegram", chatId: String(s.chatId) };
 }
 
+export interface ModelSpec {
+	provider: string;
+	id: string;
+	/** Overrides the catalog guess — set to your server's real context (e.g. 32768). */
+	contextWindow?: number;
+	maxTokens?: number;
+}
+
 export interface Config {
 	telegramBotToken?: string;
 	/** Telegram chats allowed to talk to the agent. Must be non-empty when telegram is configured. */
@@ -43,9 +51,13 @@ export interface Config {
 	matrixAccessToken?: string;
 	allowedMatrixRoomIds?: string[];
 	/** Model override for all sessions; omit to use pi's default resolution. */
-	model?: { provider: string; id: string; /** Overrides the catalog guess — set to your server's real context (e.g. 32768). */
-		contextWindow?: number;
-		maxTokens?: number; };
+	model?: ModelSpec;
+	/** Model for plan-mode sessions (cheaper model for read-only planning).
+	 * Omit to use `model` for planning too. */
+	planModel?: ModelSpec;
+	/** Model for act/delegate implementation sessions (stronger model for
+	 * writing code). Omit to use `model` for implementation too. */
+	actModel?: ModelSpec;
 	/** Piper TTS voice; omit to disable voice replies (Telegram only). */
 	piperVoice?: string;
 	/** whisper.cpp ggml model for voice-note transcription; omit to ignore voice messages (Telegram only). */
@@ -128,6 +140,8 @@ export function loadConfig(): Config {
 		matrixAccessToken: raw.matrixAccessToken,
 		allowedMatrixRoomIds: raw.allowedMatrixRoomIds ?? [],
 		model: raw.model,
+		planModel: raw.planModel,
+		actModel: raw.actModel,
 		piperVoice: raw.piperVoice,
 		whisperModel: raw.whisperModel,
 		allowedCommands: raw.allowedCommands ?? [],

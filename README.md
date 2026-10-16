@@ -24,10 +24,15 @@ scheduled tasks, web research, and local voice — built entirely on pi's SDK, n
 - **Web research**: built-in `websearch` + `fetchpage` tools (DuckDuckGo, no API keys; full page text
   saved to `~/.pi-gateway/research/`, capped in context like Hermes's approach).
 - **Memory & recall**: durable user facts live in a capped `MEMORY.md`, injected as session messages (never into the system prompt). The `recall` tool is full-text search (SQLite FTS5, incrementally indexed) over all persisted session logs, with a one-shot LLM summary of the hits — Hermes-style cross-session recall, also delivered as a tool result.
-- **`/plan <idea>`**: one-shot spec writer — numbered build plan with file paths and acceptance criteria.
+- **Plan / Act / Delegate**: a conversational plan-act workflow like Cline, Codex, and OpenCode, tuned for frugal local-model context budgets:
+  - `/plan` — toggle plan mode (read-only exploration + planning). Same session, conversation persists. Bash stays locked; a `write_plan` tool lets the agent persist the agreed plan to `~/.pi-gateway/plans/*.md` as a durable, decision-complete artifact. `/plan` again to exit.
+  - `/act` — implement the plan in the same session. Bash is approved (the `/act` invocation is the approval); the steering goal becomes "implement the agreed plan."
+  - `/done` — exit act/plan mode, re-lock bash, return to normal.
+  - `/delegate <file>` — implement a plan file in a **fresh headless session** seeded with only the plan (no chat history). The `/delegate` invocation is the approval; the spawned session writes freely, reports back, and exits. This is the frugal-context escape hatch: a long planning conversation never blows the context window of a local model, because implementation runs with just the plan.
+  - Optional per-mode models: set `planModel` (cheap, for read-only planning) and `actModel` (stronger, for implementation) in the config. `/plan` swaps to the plan model, `/act` and `/delegate` swap to the act model, `/done` restores the default. Omit either to use the default `model` for that phase — the common single-model setup is unchanged.
 - **Chat commands**: `/new` (fresh session, prints the current model), `/model` (interactive two-level menu: pick a provider, then a model; the typed `/model provider/id` still works),
   `/stop` (interrupt a running turn), `/link [code]` (identity bridging across platforms),
-  `/whoami` (show the linked identity), `/plan` — registered in Telegram's slash-command menu
+  `/whoami` (show the linked identity), `/plan`, `/act`, `/done`, `/delegate`, `/restart` (restart the gateway) — registered in Telegram's slash-command menu
   (and typed directly on every other platform). Sending any new message also interrupts a running
   turn (Hermes-style interrupt-and-redirect).
 - **Voice**: replies as Telegram voice notes via local `piper` (+ ffmpeg for OGG/Opus). Incoming
@@ -43,6 +48,10 @@ scheduled tasks, web research, and local voice — built entirely on pi's SDK, n
   (`src/security.ts`). There is no command allowlist — every bash command is
   refused until you approve it for the current session with `/bash` (which shows
   a security warning; `/bash off` re-locks it; `/new`/`/start` resets to locked).
+  Even after `/bash`, high-blast-radius commands (`rm -r`, `sudo`, `mkfs`,
+  `git push --force`, `curl|sh`, …) are refused once more; approve that one
+  command with `/bash force` (one-shot) or run it yourself. `/act` and
+  `/delegate` are full approvals that skip this friction tier.
   The systemd unit adds OS-level containment
   (ProtectSystem/ProtectHome/PrivateTmp) as a second layer — see `docs/security-plan.md`.
 
@@ -70,6 +79,8 @@ cat > ~/.pi-gateway/config.json <<'EOF'
   "matrixAccessToken": "…",
   "allowedMatrixRoomIds": ["!room:example.org"],
   "model": { "provider": "lmstudio", "id": "qwen3-32b" },
+  "planModel": { "provider": "lmstudio", "id": "qwen3-8b" },
+  "actModel": { "provider": "lmstudio", "id": "qwen3-32b" },
   "piperVoice": "/opt/piper/voices/en_US-lessac-medium.onnx"
 }
 EOF
@@ -116,7 +127,8 @@ The design targets 32K-token local models:
 
 - Chat sessions start from pi's lean default prompt; no skill packs loaded.
 - `fetchpage` caps tool results (~5K tokens) and dumps full text to disk.
-- Scheduled tasks and `/plan` run as one-shot in-memory sessions — they never touch chat history.
+- Scheduled tasks run as one-shot in-memory sessions — they never touch chat history.
+- `/delegate <file>` implements a plan in a fresh session seeded with only the plan file, so a long planning conversation never enters the implementation context.
 - Multi-hour chats rely on pi's compaction (tool-result pruning included).
 
 ## Not built (deliberately)

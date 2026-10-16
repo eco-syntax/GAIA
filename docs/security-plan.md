@@ -67,10 +67,46 @@ is to stop pattern-matching entirely.
 - `/bash` (or `/bash on`) approves bash for the current chat session, showing a
   security warning first. `/bash off` re-locks it. `/new` / `/start` resets the
   gate to closed, so approvals never leak across sessions.
-- This replaces Hermes-style interactive y/N approval deliberately: the
-  gateway's turn loop is serialized, so an in-chat "reply y to approve" would
-  deadlock. `/bash` keeps the same property — an explicit human-in-the-loop
-  decision — with none of the plumbing.
+- This replaces Hermes-style interactive y/N approval deliberately. The earlier
+  draft of this doc claimed live y/N would "deadlock the serialized turn loop";
+  that is not technically correct — `session.prompt()` awaits but yields the
+  event loop, the poll loop keeps running, and Telegram inline keyboards already
+  work end-to-end (the `/model` menu uses them). A live approval prompt is
+  buildable. The real reason GAIA rejects it is **async UX**: GAIA's user texts
+  an agent and puts the phone away, so per-command approval stalls every
+  shell-using turn until a human reads a notification — minutes or hours. In
+  practice that pushes users to "always approve" at the start of any task, which
+  collapses to today's `/bash` for no gain. `/bash` keeps the same property — an
+  explicit human-in-the-loop decision — without stalling fire-and-forget turns.
+  The destructive tier below adds friction only at the footguns, where a watching
+  user gets a kill-switch moment without stalling benign commands.
+
+### 2b. Destructive-command friction tier — `src/security.ts`
+
+A second layer on top of the binary gate. Once `/bash` opens a chat
+  (`"open"` state), high-blast-radius commands are still refused once and the
+  model is told to ask the user to re-confirm with `/bash force` (a one-shot) or
+  run the command themselves. This is **not a denylist**: a flagged command
+  still runs after the user re-confirms, so the property is "second approval for
+  footguns," not "blocked forever." That distinction is load-bearing — without
+  a bypass the tier would just be a denylist of patterns, which section #1
+  already rejected as unsound.
+
+- `/bash force` sets a one-shot: the next destructive command bypasses the
+  friction tier, then the flag is consumed. Also opens the gate if it was closed.
+- `/act` and `/delegate` set `"trusted"` instead of `"open"` — their invocation
+  IS the human sign-off for the whole plan, including destructive steps, so the
+  friction tier is skipped there.
+- Headless one-shots (`NO_CHAT`) never reach this code: they stay `blocked`.
+
+Ceiling: classification is regex over the raw command string. It catches the
+  obvious footguns a model reaches for blindly (`rm -r`, `sudo`, `mkfs`, `git
+  push --force`, `curl|sh`) and misses anything obfuscated (base64 decode,
+  env-var payload, alias chains, combined short flags). That is acceptable
+  because the binary gate stays closed-by-default and the systemd sandbox is the
+  real boundary — this tier is friction, not a security control. It must not be
+  allowed to weaken the gate later ("we classify destructive, so auto-approve
+  the rest"): that turns it back into the unsound allowlist the gate replaced.
 
 ### 3. systemd hardening — `pi-gateway.service`
 
@@ -126,19 +162,28 @@ Ceiling: still a container/VM/VPS (pi's docs point at a Gondolin micro-VM).
 
 ## Explicitly skipped
 
-- **Deny-lists** — the gate subsumes them.
+- **Deny-lists** — the gate subsumes them. (The destructive tier above is not a
+  denylist: it has a bypass via `/bash force`, so flagged commands still run.)
 - **DM pairing** — `allowedChatIds` already is that.
 - **Per-tool policies beyond bash** — superseded by issue #82: read/edit/write are
   excluded outright, which is stricter than any per-file policy; bash remains the
   escalation vector and keeps the gate.
 - **Allowlists of any kind** — unsound (see issue #58).
-- **Live y/N approval** — deadlocks against the serialized turn loop (see #2).
+- **Live per-command y/N approval** — buildable (inline keyboards already work
+  end-to-end for `/model`), but a poor default for GAIA's async chat context:
+  users would collapse it to "always approve," gaining nothing over `/bash` while
+  stalling every shell turn. The destructive tier is the narrower version that
+  survives the move from terminal to chat.
 
 ## Verification
 
 - `npx tsc --noEmit`
 - `npx tsx tests/security-check.ts` — gate starts closed, refuses a benign
-  command, runs it after `/bash`, and closes again on a new session.
+  command, runs it after `/bash`, and closes again on a new session; the
+  destructive tier refuses `rm -r`-class commands on an `/bash`-approved chat,
+  lets them through after `/bash force` (one-shot) and on `/act`'s `"trusted"`
+  approval, and never taints on a refused command.
 - After service edit: `systemctl --user daemon-reload && systemctl --user
   restart pi-gateway` and confirm the agent asks for `/bash` before running
-  anything, then runs after approval.
+  anything, then runs after approval, and that `rm -rf`-class commands still
+  ask for `/bash force` even when bash is approved.

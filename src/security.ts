@@ -39,33 +39,113 @@ const MAX_TIMEOUT_S = 600;
  * ("platform:chatId"). */
 export const NO_CHAT = "__no_chat__";
 
+/** Destructive-command patterns for the friction tier. High-blast-radius,
+ * hard-to-reverse commands a model might reach for blindly. This is NOT a
+ * denylist (see docs/security-plan.md): a flagged command still runs after
+ * /bash force, so the property is "second approval for footguns," not
+ * "blocked forever."
+ *
+ * ponytail: classification is regex over the raw command string. It catches
+ * the obvious footguns (rm -r, sudo, mkfs, git push --force, curl|sh) and
+ * misses anything obfuscated (base64 decode, env-var payload, alias chains,
+ * combined short flags like -fv). That is acceptable because the binary gate
+ * stays closed-by-default and the systemd sandbox is the real boundary — this
+ * tier is friction, not a security control. Do NOT let it weaken the gate
+ * later ("we classify destructive, so auto-approve the rest"): that turns it
+ * back into the unsound allowlist the gate replaced. */
+const DESTRUCTIVE_PATTERNS: RegExp[] = [
+	/(?<!\bgit )\brm\b[^|;&<>()]*(-\w*[rR]|--recursive)/, // rm -r, rm -rf, rm --recursive (skips git rm)
+	/\bdd\b[^|;&<>()]*of=\/dev\//, // dd to a block device
+	/\b(mkfs\w*|shred)\b/, // format / secure-overwrite
+	/\bgit\s+push\b[^|;&]*(--force(?![\w-])|\s-f(?![\w-]))/, // force push (skips --force-with-lease)
+	/>\s*\/dev\/(sd|nvme|disk|mmcblk)/, // redirect to a raw device
+	/\bsudo\b/, // privilege escalation (also blocked by NoNewPrivileges)
+	/\b(shutdown|reboot|halt|poweroff)\b/, // system power
+	/\bchmod\b[^|;&]*\b777\b/, // world-writable
+	/\bchown\b[^|;&]*\s-R\b/, // recursive chown
+	/\b(curl|wget)\b[^|;]*\|\s*(sh|bash)\b/, // pipe-to-shell (remote code exec)
+];
+
+/** True if a command looks high-blast-radius enough to warrant a second
+ * confirmation after /bash has already opened the gate. Exported for tests. */
+export function isDestructive(command: string): boolean {
+	return DESTRUCTIVE_PATTERNS.some((p) => p.test(command));
+}
+
 /**
- * Per-chat bash gate. A chat is CLOSED (blocked) by default; the user must
- * explicitly approve bash for the session with /bash. Approvals never leak
- * across a new session.
+ * Per-chat bash gate with two approval levels plus a one-shot destructive
+ * bypass. A chat is CLOSED (blocked) by default; the user must explicitly
+ * approve bash for the session with /bash.
+ *
+ *   closed   — every command refused (default).
+ *   open     — /bash: non-destructive commands run; destructive ones are
+ *              refused until the user re-confirms with /bash force.
+ *   trusted  — /act or /delegate: the invocation is the human sign-off for
+ *              shell work including destructive steps, so the friction tier
+ *              is skipped.
+ *
+ * /bash force sets a one-shot: the next destructive command the model runs
+ * bypasses the friction tier, then the flag is consumed. Approvals never
+ * leak across a new session.
  */
 export class BashGate {
-	private approved = new Map<string, boolean>();
+	private approved = new Map<string, "open" | "trusted">();
+	private force = new Set<string>();
 
-	/** True when bash is blocked and every command must be refused. */
+	/** True when bash is closed: every command is refused (default state). */
 	blocked(chatId: string): boolean {
-		return chatId === NO_CHAT || !this.approved.get(chatId);
+		return chatId === NO_CHAT || !this.approved.has(chatId);
 	}
 
-	/** Approve bash for a chat (turns off per-command approval). */
+	/** True when the chat is fully approved and destructive commands skip the
+	 * friction tier (/act, /delegate). */
+	trusted(chatId: string): boolean {
+		return this.approved.get(chatId) === "trusted";
+	}
+
+	/** Approve bash for non-destructive commands; destructive ones need
+	 * /bash force. Clears any stale one-shot. */
 	allow(chatId: string): void {
 		// NO_CHAT has no user to approve, so it can never be opened.
-		if (chatId !== NO_CHAT) this.approved.set(chatId, true);
+		if (chatId === NO_CHAT) return;
+		this.approved.set(chatId, "open");
+		this.force.delete(chatId);
+	}
+
+	/** Approve bash for ALL commands including destructive (/act, /delegate). */
+	trust(chatId: string): void {
+		if (chatId === NO_CHAT) return;
+		this.approved.set(chatId, "trusted");
+		this.force.delete(chatId);
+	}
+
+	/** One-shot: let the next destructive command bypass the friction tier. */
+	forceNext(chatId: string): void {
+		if (chatId === NO_CHAT) return;
+		this.force.add(chatId);
+	}
+
+	/** Consume and return whether a one-shot force was pending for this chat.
+	 * Called only from the destructive-check path, so a force set but never
+	 * matched by a destructive command persists until /new or /bash off clears
+	 * it — ponytail: that degrades to today's /bash-approved behavior (no
+	 * friction tier), not worse, since the binary gate is still the control. */
+	consumeForce(chatId: string): boolean {
+		const has = this.force.has(chatId);
+		this.force.delete(chatId);
+		return has;
 	}
 
 	/** Put a chat back to the default closed state. */
 	block(chatId: string): void {
-		this.approved.set(chatId, false);
+		this.approved.delete(chatId);
+		this.force.delete(chatId);
 	}
 
 	/** Drop the decision so the NEXT session for this chat starts closed again. */
 	reset(chatId: string): void {
 		this.approved.delete(chatId);
+		this.force.delete(chatId);
 	}
 }
 
@@ -84,7 +164,9 @@ export function bashGateTool(chatId: string, onAccess?: () => void): ToolDefinit
 			"Execute a bash command in the current working directory. Returns stdout and stderr, capped. " +
 			"Bash is gated: by default every command is refused and you must ask the user to approve " +
 			"bash for this session with /bash. If a command is refused, tell the user exactly what " +
-			"you wanted to run and ask them to run /bash.",
+			"you wanted to run and ask them to run /bash. Even after bash is approved, high-blast-radius " +
+			"commands (rm -r, sudo, mkfs, git push --force, curl|sh, etc.) are refused once more; tell " +
+			"the user what you want to run and they can approve that one command with /bash force.",
 		parameters: Type.Object({
 			command: Type.String({ description: "Bash command to execute" }),
 			timeout: Type.Optional(
@@ -98,6 +180,23 @@ export function bashGateTool(chatId: string, onAccess?: () => void): ToolDefinit
 						{
 							type: "text" as const,
 							text: `Refused: bash is locked in this session, so \`${command}\` was not run. Every bash command needs user approval here. Ask the user to run /bash to approve bash for this session (it shows a security warning first).`,
+						},
+					],
+					details: undefined,
+				};
+			}
+			// Friction tier (not a denylist — see docs/security-plan.md): even
+			// after /bash opens the gate, high-blast-radius commands are refused
+			// once and the model is told to ask the user to re-confirm with
+			// /bash force (a one-shot) or run the command themselves. /act and
+			// /delegate set "trusted" and skip this entirely. A refused
+			// destructive command runs nothing and must NOT taint the session.
+			if (!bashGate.trusted(chatId) && isDestructive(command) && !bashGate.consumeForce(chatId)) {
+				return {
+					content: [
+						{
+							type: "text" as const,
+							text: `Refused (destructive): \`${command}\` looks high-blast-radius (rm -r, sudo, mkfs, git push --force, curl|sh, …) and was not run even though bash is approved. Tell the user exactly what you wanted to run and why; they can approve this one command with /bash force, or run it themselves.`,
 						},
 					],
 					details: undefined,

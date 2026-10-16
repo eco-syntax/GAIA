@@ -3,9 +3,10 @@ import { join } from "node:path";
 import { ensureStateDir, stateDir, type Schedule } from "./config.js";
 
 // ============================================================================
-// Live schedule registry. Schedules live in ~/.pi-gateway/schedules.json and are
-// read fresh by the scheduler every tick, so the agent can add/remove them at
-// runtime without a gateway restart.
+// Live schedule registry. Schedules live in ~/.pi-gateway/schedules.json and
+// are loaded into memory ONCE at boot. The scheduler re-consults that in-memory
+// array every tick, so add/remove via the schedule tool take effect without a
+// restart; editing schedules.json on disk does NOT (the file isn't re-read).
 // ============================================================================
 
 const SCHEDULES_FILE = join(stateDir, "schedules.json");
@@ -48,7 +49,7 @@ function persist(): void {
 /** Snapshot of the live registry, optionally scoped to one chat. The scheduler
  * (needs every task) calls with no chatId; the agent tool passes the requesting
  * chat so it never sees or acts on schedules owned by other chats. */
-export function listSchedules(chatId?: number): Schedule[] {
+export function listSchedules(chatId?: number | string): Schedule[] {
 	const all = [...schedules];
 	return chatId === undefined ? all : all.filter((s) => s.chatId === chatId);
 }
@@ -77,7 +78,7 @@ export function addSchedule(s: Schedule): AddResult {
 /** Remove by exact name, scoped to a chat: only a schedule owned by chatId
  * can be removed, so a chat can never delete another chat's tasks. Returns
  * true if something was removed. */
-export function removeSchedule(name: string, chatId: number): boolean {
+export function removeSchedule(name: string, chatId: number | string): boolean {
 	const before = schedules.length;
 	schedules = schedules.filter((s) => s.name !== name || s.chatId !== chatId);
 	if (schedules.length !== before) {

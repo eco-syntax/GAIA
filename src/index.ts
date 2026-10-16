@@ -15,7 +15,7 @@ import { createDiscordPlatform } from "./discord.js";
 import { createMatrixPlatform } from "./matrix.js";
 import { toSpokenText } from "./format.js";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
-import { ChatSessions, runOneShot, turnOutcome, type TurnOutcome } from "./session.js";
+import { ChatSessions, refreshModelCatalog, runDelegate, turnOutcome, type TurnOutcome } from "./session.js";
 import { takePendingMemoryUpdate, pendingMemoryStaged, approveStagedMemory, dropStagedMemory, loadMemory, memoryFileForChat } from "./memory.js";
 import { createPendingLink, consumeLink, whoami } from "./identity.js";
 import { webTools } from "./web.js";
@@ -27,6 +27,7 @@ import { chatKey, type ChatMessage, type ChatRef, type InlineButton, type Platfo
 import { saveAttachment } from "./attachments.js";
 import { basename } from "node:path";
 import { bashGate } from "./security.js";
+import { PLAN_PROMPT, ACT_PROMPT, MODE_ENDED } from "./plan.js";
 
 const config = loadConfig();
 loadSchedules();
@@ -122,7 +123,9 @@ const cb = (a: string, value?: string): string | null => {
 	return Buffer.byteLength(data) <= 64 ? data : null;
 };
 
-/** Parse a callback payload back into { a: action, p?: provider, n?: page, s?: spec }. */
+/** Parse a callback payload back into { a: action, p?: provider, n?: page, s?: spec }.
+ * Wire codes are terse ("p", "pg" — callback_data is capped at 64 bytes); they
+ * are normalized to the full names handleCallback dispatches on. */
 function parseCb(data: string): { a: string; p?: string; n?: number; s?: string } | undefined {
 	const [a, ...parts] = data.split("|");
 	const value = parts.join("|");
@@ -130,10 +133,10 @@ function parseCb(data: string): { a: string; p?: string; n?: number; s?: string 
 		case "pg": {
 			const n = Number(parts[1]);
 			if (!parts[0] || !Number.isFinite(n)) return undefined;
-			return { a, p: parts[0], n };
+			return { a: "page", p: parts[0], n };
 		}
 		case "set": return value ? { a, s: value } : undefined;
-		case "p": return value ? { a, p: value } : undefined;
+		case "p": return value ? { a: "provider", p: value } : undefined;
 		case "cancel":
 		case "providers":
 			return { a };
@@ -257,7 +260,7 @@ async function handleCallback(ref: ChatRef, press: { id: string; data: string; m
 		} else {
 			await platform.answerCallback?.(press.id, `Model set to ${action.s}`);
 			if (press.messageId !== undefined && platform.editMenu) {
-				await platform.editMenu(ref, press.messageId, `✅ Model set to ${action.s} — new sessions use it.`, []);
+				await platform.editMenu(ref, press.messageId, `✅ Model set to ${action.s} — active conversations continue on it.`, []);
 			}
 		}
 		return;
@@ -340,12 +343,17 @@ startScheduler(
 if (platforms.telegram) {
 	void setMyCommands(config.telegramBotToken!, [
 		{ command: "new", description: "Start a fresh session" },
-		{ command: "plan", description: "One-shot build plan for an idea" },
+		{ command: "plan", description: "Toggle plan mode (read-only planning + write_plan)" },
+		{ command: "act", description: "Implement the plan in this session (bash approved)" },
+		{ command: "done", description: "Exit plan/act mode, re-lock bash" },
+		{ command: "delegate", description: "Implement a plan file in a fresh session (/delegate <file>)" },
 		{ command: "link", description: "Link this chat to another chat's identity (/link [code])" },
 		{ command: "whoami", description: "Show the linked identity" },
 		{ command: "stop", description: "Interrupt the current turn" },
 		{ command: "model", description: "Show or switch the model (/model [provider/id])" },
-		{ command: "bash", description: "Approve or lock bash for this session (/bash, /bash off)" },
+		{ command: "refresh", description: "Reload models.json and provider catalogs" },
+		{ command: "restart", description: "Restart the gateway service" },
+		{ command: "bash", description: "Approve or lock bash (/bash, /bash off, /bash force)" },
 	]);
 }
 console.log(`pi-gateway running (state: ${stateDir}), platforms: ${Object.keys(platforms).join(", ")}, ${listSchedules().length} schedules`);
@@ -382,26 +390,72 @@ async function handleMessage(msg: ChatMessage, prompt: string, voice: boolean): 
 	const ref = msg.ref;
 	const platform = platforms[ref.platform]!;
 	const chatId = chatKey(ref);
-	if (prompt.startsWith("/plan ")) {
+	if (prompt === "/plan") {
+		// Toggle plan mode (read-only exploration + planning). No task argument —
+		// the task arrives as normal conversation. Mirrors Cline/Codex/OpenCode:
+		// same session, conversation persists across the switch. The only thing
+		// that changes is the tool surface (write_plan added) + steering prompt.
+		const session = await chats.get(ref);
+		const mode = chats.modeOf(ref);
+		if (mode === "plan") {
+			chats.setMode(ref, undefined);
+			chats.applyMode(session, ref);
+			await chats.swapModel(ref, undefined);
+			await session.sendCustomMessage({ customType: "plan-mode", content: MODE_ENDED, display: false }, { triggerTurn: false });
+			await platform.sendText(ref, "Exited plan mode.");
+		} else {
+			chats.setMode(ref, "plan");
+			chats.applyMode(session, ref);
+			await chats.swapModel(ref, "plan");
+			await session.sendCustomMessage({ customType: "plan-mode", content: PLAN_PROMPT, display: false }, { triggerTurn: false });
+			await platform.sendText(ref, "📋 Plan mode on. Explore and refine a plan in conversation; write it to disk with write_plan. /plan again to exit, /act to implement here, or /delegate <file> to implement in a fresh session.");
+		}
+		return;
+	}
+	if (prompt === "/act") {
+		// Enter act mode: implement the agreed plan in this same session.
+		// Bash is approved (the /act invocation is the approval gesture, same
+		// as /bash but with implementation as the stated goal). write_plan is
+		// removed from the tool set — planning is done.
+		const session = await chats.get(ref);
+		chats.setMode(ref, "act");
+		chats.applyMode(session, ref);
+		bashGate.trust(chatId);
+		await chats.swapModel(ref, "act");
+		await session.sendCustomMessage({ customType: "act-mode", content: ACT_PROMPT, display: false }, { triggerTurn: false });
+		await platform.sendText(ref, "🔧 Act mode on. Bash is fully approved (including destructive commands) — implement the plan. /done when finished.");
+		return;
+	}
+	if (prompt === "/done") {
+		// Exit act (or plan) mode back to default. Re-lock bash so the session
+		// returns to its normal gated state.
+		const mode = chats.modeOf(ref);
+		if (!mode) {
+			await platform.sendText(ref, "Not in plan or act mode.");
+			return;
+		}
+		const session = await chats.get(ref);
+		chats.setMode(ref, undefined);
+		chats.applyMode(session, ref);
+		bashGate.block(chatId);
+		await chats.swapModel(ref, undefined);
+		await session.sendCustomMessage({ customType: "mode-ended", content: MODE_ENDED, display: false }, { triggerTurn: false });
+		await platform.sendText(ref, mode === "act" ? "Exited act mode. Bash re-locked." : "Exited plan mode.");
+		return;
+	}
+	if (prompt.startsWith("/delegate ")) {
+		// Spawn a fresh headless session seeded with just the plan file — no
+		// chat history — so a long planning conversation doesn't blow the
+		// context budget of a frugal local model. /delegate is the approval:
+		// the spawned session may write freely, then exits and reports back.
+		const planFile = prompt.slice("/delegate ".length).trim();
+		if (!planFile) {
+			await platform.sendText(ref, "Usage: /delegate <plan-file> (the filename write_plan saved, e.g. add-login.md).");
+			return;
+		}
 		const stopTyping = startTypingIndicator(platform, ref);
-		let planSession: AgentSession | undefined;
 		try {
-			const out = await runOneShot(
-				config,
-				"You are a concise technical planner. Produce a numbered build plan with file paths and acceptance criteria. No prose padding.",
-				prompt.slice(6),
-				{
-					tools: ["read", "bash"],
-					customTools: tools,
-					chatId,
-					onSession: (session) => {
-						planSession = session;
-						trackTurn(chatId, session);
-					},
-				},
-			);
-			// /stop already told the user; don't also deliver "Error: turn aborted".
-			if (planSession && turnOutcome(planSession, 0).error === "turn aborted") return;
+			const out = await runDelegate(config, planFile);
 			await deliver(ref, out);
 		} finally {
 			activeTurns.delete(chatId);
@@ -432,8 +486,13 @@ async function handleMessage(msg: ChatMessage, prompt: string, voice: boolean): 
 			);
 		} else {
 			const err = await chats.switchModel(arg);
-			await platform.sendText(ref, err ?? `Model set to ${arg} — new sessions use it`);
+			await platform.sendText(ref, err ?? `Model set to ${arg} — active conversations continue on it`);
 		}
+		return;
+	}
+	if (prompt === "/refresh") {
+		const err = await refreshModelCatalog();
+		await platform.sendText(ref, err ? `Reload failed:\n${err}` : "Reloaded models.json and provider catalogs.");
 		return;
 	}
 	if (prompt === "/start" || prompt === "/new") {
@@ -442,12 +501,39 @@ async function handleMessage(msg: ChatMessage, prompt: string, voice: boolean): 
 		await platform.sendText(ref, `Fresh session started — model: ${await chats.currentModel()}`);
 		return;
 	}
-	if (prompt === "/bash" || prompt === "/bash on" || prompt === "/bash off") {
+	if (prompt === "/restart") {
+		// Ack first: the HTTP round-trip flushes before we die. The service unit
+		// runs with Restart=on-failure, so exit(1) makes the supervisor bring the
+		// gateway back with the current code (new prompts, tools) in effect.
+		await platform.sendText(ref, "Restarting the gateway…");
+		process.exit(1);
+	}
+	if (prompt === "/bash" || prompt === "/bash on" || prompt === "/bash off" || prompt === "/bash force") {
+		// Bash stays locked in plan mode — write access is the one thing plan
+		// mode exists to withhold. Use /act (which approves bash and sets
+		// implementation as the goal) or /plan to exit first.
+		if (chats.modeOf(ref) === "plan" && prompt !== "/bash off") {
+			await platform.sendText(ref, "Bash is locked in plan mode. Run /act to implement the plan (bash is approved there), or /plan again to exit plan mode first.");
+			return;
+		}
+		if (prompt === "/bash force") {
+			// One-shot destructive bypass: the destructive tier refused a command
+			// the user does want to run, so they re-confirm here. Approves the next
+			// single command (destructive or not) on top of the current approval,
+			// then reverts. Opens the gate too if it was closed.
+			if (bashGate.blocked(chatId)) bashGate.allow(chatId);
+			bashGate.forceNext(chatId);
+			await platform.sendText(
+				ref,
+				"⚠️ Bash force on: the next command the agent runs (including destructive ones) is approved once, then this reverts to normal /bash approval. Use it only for the specific command you just reviewed.",
+			);
+			return;
+		}
 		if (prompt === "/bash on" || (prompt === "/bash" && bashGate.blocked(chatId))) {
 			bashGate.allow(chatId);
 			await platform.sendText(
 				ref,
-				"⚠️ Security warning: bash is now ENABLED for this session. The agent can run any shell command as your user until a new session (/new) starts. This weakens the prompt-injection guard, so only approve if you trust the agent's current inputs. Turn it back off with /bash off.",
+				"⚠️ Security warning: bash is now ENABLED for this session. The agent can run any non-destructive shell command as your user until a new session (/new) starts; destructive commands (rm -r, sudo, mkfs, git push --force, …) still need /bash force. This weakens the prompt-injection guard, so only approve if you trust the agent's current inputs. Turn it back off with /bash off.",
 			);
 		} else {
 			bashGate.block(chatId);

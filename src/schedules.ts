@@ -29,7 +29,7 @@ export function scheduleTool(ref: ChatRef): ToolDefinition {
 			if (params.action === "list") {
 				// Filter to THIS chat: schedules are per-chat, so a chat must never
 				// enumerate (or read the prompts of) another chat's tasks.
-				const scheds = listSchedules(chatId);
+				const scheds = listSchedules(ref.chatId);
 				if (!scheds.length) {
 					return { content: [{ type: "text" as const, text: "No scheduled tasks for this chat." }], details: undefined };
 				}
@@ -44,7 +44,7 @@ export function scheduleTool(ref: ChatRef): ToolDefinition {
 					return { content: [{ type: "text" as const, text: "Specify the task name to remove." }], details: undefined };
 				}
 				// Scope deletion to THIS chat: a chat can only remove its own tasks.
-				const text = removeSchedule(name, chatId)
+				const text = removeSchedule(name, ref.chatId)
 					? `Removed schedule "${name}".`
 					: `No schedule named "${name}" in this chat.`;
 				return { content: [{ type: "text" as const, text }], details: undefined };
@@ -75,9 +75,10 @@ export function scheduleTool(ref: ChatRef): ToolDefinition {
  * gateway runs a headless pi turn on a timer and delivers the text to the chat.
  * No job types, no DSL — the prompt IS the task.
  *
- * The scheduler reads the LIVE registry (scheduleStore) every tick rather than
- * a startup snapshot, so tasks added/removed at runtime take effect without a
- * gateway restart.
+ * The scheduler re-reads the in-memory registry (scheduleStore) every tick, so
+ * schedules the agent adds or removes at runtime take effect without a restart.
+ * Edits to schedules.json on disk are NOT picked up — the file is loaded once
+ * at boot.
  */
 
 /** Whether the daily `at: "HH:MM"` time fell in (prev, now] — catches ticks skipped by event-loop stalls or suspend/resume. */
