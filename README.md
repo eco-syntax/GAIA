@@ -57,10 +57,38 @@ scheduled tasks, web research, and local voice — built entirely on pi's SDK, n
 
 ## Setup
 
+> **Trust model**: every chat on an allow-list can run arbitrary shell on the
+> host via `/act` — that is the product. Only allow-list chats of people you
+> would give shell access to your machine.
+
+### Prerequisites
+
+- Linux with **systemd** user services (Debian/Ubuntu tested; on Windows use
+  WSL2 with systemd enabled — see below; macOS is not supported, install.sh
+  needs `systemctl`)
+- Node.js ≥ 22, git, npm, curl
+- Optional for voice: ffmpeg (`sudo apt install ffmpeg`)
+
+### Install (Linux / WSL2)
+
+```bash
+git clone https://github.com/eco-syntax/GAIA.git ~/GAIA
+cd ~/GAIA
+./install.sh
+```
+
 `./install.sh` also installs and starts a llama.cpp router as a systemd user
 service (pinned build, port 8080), downloads the apertus default model, and
 creates the gateway config interactively (token prompt, chat-id detection,
-llama.cpp + apertus default). Manual setup, if you prefer:
+llama.cpp + apertus default).
+
+> **Note**: `install.sh` installs a fork of pi ("GreenPi") and rewrites
+> GAIA's `package.json` to point at its local tarballs — that is expected, and
+> committing those paths is not (the working tree will show changes; leave
+> them). To update GAIA later: `git pull` and re-run `./install.sh` (it is
+> idempotent).
+
+Manual setup, if you prefer:
 
 ```bash
 npm install
@@ -110,16 +138,26 @@ the systemd unit's hardening (see `docs/security-plan.md`).
 
 ```bash
 docker build -t pi-gateway .
-docker run -d --name pi-gateway \
+docker run -d --name pi-gateway --restart=on-failure \
   -v ~/.pi-gateway:/home/gaia/.pi-gateway \
   --add-host host.docker.internal:host-gateway \
   pi-gateway
 ```
 
+On Windows, either run everything inside WSL2 (`wsl --install -d Ubuntu`, then
+enable systemd in `/etc/wsl.conf` with `[boot]` / `systemd=true`, and install
+as above) or use Docker Desktop with the commands here.
+
 Create `~/.pi-gateway/config.json` first (manual setup above). Point the model
 config at `host.docker.internal` instead of `localhost` — e.g. the llama.cpp
 router is `http://host.docker.internal:8080`. For voice, the `piperVoice` path
 must exist in the container: mount the voice dir (`-v /opt/piper/voices:/opt/piper/voices:ro`).
+
+Note: the Dockerfile's `npm ci` resolves GAIA's pinned GreenPi tarballs via the
+`file:` paths `install.sh` writes into `package.json` (pointing at `~/.greenpi`).
+Those paths do not exist inside a build, so the Docker path only works if you
+vendor the tarballs into the build context and adjust the Dockerfile — the WSL2
+path above avoids this entirely and is the supported install.
 
 ## Context-budget discipline
 

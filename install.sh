@@ -22,7 +22,7 @@ WHISPER_VERSION=b5130
 # every other pinned asset. Bump the commit AND the corresponding checksum together.
 PIPER_VOICES_COMMIT=1162a9173d0ce503555aed757976b7a9912eae4c
 WHISPER_MODEL_COMMIT=5359861c739e955e79d9a303bcbc70fb988958b1
-GREENPI_REPO="${GREENPI_REPO:-https://github.com/ColbyBrown/GreenPi}"
+GREENPI_REPO="${GREENPI_REPO:-https://github.com/eco-syntax/GreenPi}"
 GREENPI_SRC="${GREENPI_SRC:-$HOME/GreenPi}"
 GREENPI_HOME="${GREENPI_HOME:-$HOME/.greenpi}"
 GAIA_DIR="${GAIA_DIR:-$HOME/GAIA}"
