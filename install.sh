@@ -116,7 +116,7 @@ else
 	git clone -q "$GREENPI_REPO" "$GREENPI_SRC"
 fi
 
-echo "==> 2/10 brand fork as greenpi (config dir ~/.greenpi; bin stays 'pi' — local-release's shim expects it)"
+echo "==> 2/10 brand fork as greenpi (config dir ~/.greenpi; packed bin is greenpi — local-release's shim follows the package's bin)"
 node - "$GREENPI_SRC" <<'EOF'
 const fs = require("fs");
 const p = `${process.argv[2]}/packages/coding-agent/package.json`;
@@ -146,7 +146,7 @@ fs.writeFileSync(
 );
 EOF
 (cd "$GREENPI_HOME/node" && npm install --omit=dev --ignore-scripts --no-fund --no-audit)
-ln -sf "$GREENPI_HOME/node/node_modules/.bin/pi" "$BIN_DIR/greenpi"
+ln -sf "$GREENPI_HOME/node/node_modules/.bin/greenpi" "$BIN_DIR/greenpi"
 case ":$PATH:" in
 *":$BIN_DIR:"*) ;;
 *) echo "note: $BIN_DIR is not in PATH — add it to use 'greenpi'" >&2 ;;
