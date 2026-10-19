@@ -2,7 +2,7 @@
 // the SSRF guard, and the web fetch exfiltration guard.
 // Run: npx tsx tests/security-check.ts
 import assert from "node:assert";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -10,6 +10,23 @@ import { join } from "node:path";
 // hoists static imports, so plain statements in this file would run too late.
 const fakeHome = mkdtempSync(join(tmpdir(), "bashgate-"));
 process.env.HOME = fakeHome;
+// A fake credential present at module-init time: redactSecrets captures env
+// values matching TOKEN/KEY/SECRET/PASSWORD when security.js first loads.
+process.env.GAIA_TEST_BOT_TOKEN = "123456:AAHk_super_secret_bot_token_9876";
+
+// Two distinct identities (issue #120 needs them): chats "a" and "b" must map
+// to different memory files. identities.json is read lazily on first use, so
+// writing it here — before any project import — is enough.
+mkdirSync(join(fakeHome, ".pi-gateway"), { recursive: true });
+writeFileSync(
+	join(fakeHome, ".pi-gateway", "identities.json"),
+	JSON.stringify({
+		identities: [
+			{ id: "identity-a", chats: [{ platform: "telegram", chatId: "a", userId: "u-a", linkedAt: "2026-01-01T00:00:00Z" }] },
+			{ id: "identity-b", chats: [{ platform: "telegram", chatId: "b", userId: "u-b", linkedAt: "2026-01-01T00:00:00Z" }] },
+		],
+	}, null, 2),
+);
 
 const { bashGate, bashGateTool, NO_CHAT, isDestructive } = await import("../src/security.js");
 
@@ -121,7 +138,7 @@ assert.ok(bashGate.blocked(CHAT), "reset returns chat to blocked");
 console.log("bash gate self-checks passed");
 
 // memory gate: web-tainted sessions stage saves instead of persisting them
-const { memoryTools, loadMemory, approveStagedMemory, dropStagedMemory, pendingMemoryStaged } = await import("../src/memory.js");
+const { memoryTools, loadMemory, approveStagedMemory, dropStagedMemory, pendingMemoryStaged, memoryFileForChat } = await import("../src/memory.js");
 import type { ChatRef } from "../src/platform.js";
 type Tool = { execute: (id: string, params: { action: string; content?: string }) => Promise<{ content: { text: string }[] }> };
 const ref: ChatRef = { platform: "telegram", chatId: "111" };
@@ -137,6 +154,12 @@ assert.strictEqual(pendingMemoryStaged().length, 1, "staged entry should be pend
 await save(clean, "user prefers short answers");
 assert.ok(loadMemory().includes("short answers"), "untainted save should persist");
 
+// Staging is keyed by the destination memory file (#120): an entry staged for
+// chat A's memory file must not be persisted (or drained) by a /memory-approve
+// from chat B. Both files are per-identity MEMORY.<uid>.md files.
+const fileA = join(fakeHome, "MEMORY.A.md");
+const fileB = join(fakeHome, "MEMORY.B.md");
+assert.strictEqual(pendingMemoryStaged(fileB).length, 0, "B sees none of A's staged entries");
 const approved = approveStagedMemory();
 assert.strictEqual(approved.length, 1, "approve should persist staged entries");
 assert.ok(loadMemory().includes("injected"), "approved entry should reach MEMORY.md");
@@ -145,6 +168,23 @@ assert.strictEqual(pendingMemoryStaged().length, 0, "approve should drain the qu
 await save(tainted, "discard me");
 assert.strictEqual(dropStagedMemory().length, 1, "deny should discard staged entries");
 assert.ok(!loadMemory().includes("discard me"), "denied entry must not reach MEMORY.md");
+
+// cross-chat isolation (#120): stage into file A, approve from B's file —
+// A's staged entry must land in A only, and B's approve must not drain it.
+// (save() above stages into the default MEMORY.md; here the staging map keys
+// on the file passed to the tools, so re-stage with explicit files.)
+const toolsA = memoryTools({} as never, () => true, { platform: "telegram", chatId: "a" });
+const toolsB = memoryTools({} as never, () => true, { platform: "telegram", chatId: "b" });
+assert.notStrictEqual(memoryFileForChat({ platform: "telegram", chatId: "a" }), memoryFileForChat({ platform: "telegram", chatId: "b" }), "distinct identities get distinct memory files");
+const saveA = (t: Tool, content: string) => t.execute("t4", { action: "save", content });
+await saveA(toolsA[0] as Tool, "poisoned line from chat A");
+await saveA(toolsB[0] as Tool, "benign line from chat B");
+const savedB = approveStagedMemory(memoryFileForChat({ platform: "telegram", chatId: "b" }));
+assert.strictEqual(savedB.length, 1, "B's approve persists only B's staged entry");
+assert.ok(!savedB[0]!.includes("poisoned"), "B's approve must not persist A's entry");
+assert.strictEqual(pendingMemoryStaged(memoryFileForChat({ platform: "telegram", chatId: "a" })).length, 1, "A's staged entry survives B's approve");
+const deniedA = dropStagedMemory(memoryFileForChat({ platform: "telegram", chatId: "a" }));
+assert.ok(deniedA[0]!.includes("poisoned"), "A's deny drains A's entry");
 console.log("memory gate self-checks passed");
 
 // web fetch exfiltration guard: fetchpage must refuse any URL that is not a
@@ -165,5 +205,16 @@ assert.ok(/refused/i.test(fragLeak.content[0]!.text), "fetchpage should refuse U
 const cleanFetch = await fetchTool.execute("t3", { url: "https://example.com" });
 assert.ok(!/refused/i.test(cleanFetch.content[0]!.text), "fetchpage should allow bare-origin URLs");
 console.log("web fetch exfiltration self-check passed");
+
+// secret redaction: the agent's own env credentials (the one thing no
+// filesystem boundary hides) are stripped from tool output. The fake token is
+// set at the top of this file, before security.js is first imported, so the
+// module-init capture sees it.
+const { redactSecrets } = await import("../src/security.js");
+const fakeToken = "123456:AAHk_super_secret_bot_token_9876";
+assert.ok(fakeToken.length >= 12, "test fixture matches the ≥12-char capture rule");
+const redacted = redactSecrets(`output: ${fakeToken} and more`);
+assert.ok(!redacted.includes(fakeToken), "secret value must not survive tool output");
+assert.ok(redacted.includes("[redacted]"), "secret value is replaced, not dropped");
 
 rmSync(fakeHome, { recursive: true, force: true });
