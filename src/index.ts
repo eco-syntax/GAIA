@@ -391,6 +391,7 @@ if (platforms.telegram) {
 		{ command: "delegate", description: "Implement a plan file in a fresh session (/delegate <file>)" },
 		{ command: "link", description: "Link this chat to another chat's identity (/link [code])" },
 		{ command: "whoami", description: "Show the linked identity" },
+		{ command: "status", description: "Show sandbox, model, and bash state" },
 		{ command: "stop", description: "Interrupt the current turn" },
 		{ command: "model", description: "Show or switch the model (/model [provider/id])" },
 		{ command: "refresh", description: "Reload models.json and provider catalogs" },
@@ -646,6 +647,15 @@ async function handleMessage(msg: ChatMessage, prompt: string, voice: boolean): 
 	}
 	if (prompt === "/whoami") {
 		await platform.sendText(ref, whoami(ref));
+		return;
+	}
+	if (prompt === "/status") {
+		const lines = [
+			`Sandbox: ${describeSandbox(sandbox, workspace)}`,
+			`Model: ${await chats.currentModel()}`,
+			`Bash: ${bashGate.blocked(chatId) ? "locked (approve with /bash)" : "approved for this session"}`,
+		];
+		await platform.sendText(ref, lines.join("\n"));
 		return;
 	}
 	const session = await chats.get(ref);
