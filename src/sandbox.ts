@@ -27,6 +27,7 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { stateDir } from "./config.js";
 
 export type SandboxMode = "docker" | "bwrap" | "off";
@@ -96,9 +97,9 @@ export function enterSandbox(
 
 	// The gateway's own code (GAIA repo, incl. node_modules for the tsx loader)
 	// and the node binary live on the host outside the sandbox view — bind them
-	// read-only. argv[0] here is the script path (see the call site).
-	const scriptPath = resolve(argv[0] ?? "");
-	const repoRoot = dirname(dirname(scriptPath)); // <repo>/src/index.ts → <repo>
+	// read-only. sandbox.ts sits at <repo>/src/, so the repo root is two up.
+	const thisFile = fileURLToPath(import.meta.url); // .../src/sandbox.js|ts
+	const repoRoot = dirname(dirname(thisFile));
 	const nodeBinDir = dirname(process.execPath);
 
 	// Filesystem view: system read-only, /home and /tmp empty, then the two
@@ -115,6 +116,10 @@ export function enterSandbox(
 	for (const key of ENV_PASSTHROUGH) {
 		if (process.env[key] !== undefined) env[key] = process.env[key]!;
 	}
+	// Pin the resolved workspace + state dir across the re-exec: the child's HOME
+	// is the workspace, so any ~-derived default would nest inside it.
+	env.GAIA_WORKSPACE = workspace;
+	env.PI_GATEWAY_STATE = stateDir;
 	// GAIA_* is the config-override surface (tokens, allow-lists, model spec):
 	// the gateway needs them, so they cross deliberately.
 	for (const [key, value] of Object.entries(process.env)) {
@@ -132,6 +137,7 @@ export function enterSandbox(
 		"--bind", workspace, workspace,
 		"--bind", stateDir, stateDir,
 		"--",
+		process.execPath,
 		...argv,
 	];
 	// The child inherits bwrap's environment, and bwrap's env is exactly the
