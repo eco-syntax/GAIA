@@ -8,6 +8,7 @@ import { isIP } from "node:net";
 import type { LookupFunction } from "node:net";
 import { join } from "node:path";
 import { stateDir, ensureStateDir } from "./config.js";
+import { redactSecrets } from "./security.js";
 
 // ============================================================================
 // Hermes-style web search + fetch: one tool, zero user configuration.
@@ -299,7 +300,7 @@ export function webTools(onAccess?: () => void): ToolDefinition[] {
 			const text = results
 				.map((r, i) => `${i + 1}. ${r.title}\n   ${r.url}\n   ${r.snippet}`)
 				.join("\n\n");
-			return { content: [{ type: "text" as const, text }], details: undefined };
+			return { content: [{ type: "text" as const, text: redactSecrets(text) }], details: undefined };
 		},
 	});
 
@@ -351,7 +352,7 @@ export function webTools(onAccess?: () => void): ToolDefinition[] {
 			}
 			if (!res.ok) return { content: [{ type: "text" as const, text: `HTTP ${res.status} fetching ${params.url}` }], details: undefined };
 			const { buf, truncated } = await readBodyLimited(res);
-			const text = htmlToText(buf.toString("utf8"));
+			const text = redactSecrets(htmlToText(buf.toString("utf8")));
 			if (!truncated && text.length <= FETCH_CHAR_LIMIT) {
 				return { content: [{ type: "text" as const, text }], details: undefined };
 			}

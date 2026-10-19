@@ -40,6 +40,10 @@ export function deepestCause(err: unknown): unknown {
 // from telegram.js alongside deepestCause.
 export { errorCode } from "./net.js";
 
+function isPrivateChat(type: string | undefined): boolean {
+	return type === "private";
+}
+
 interface TgUpdate {
 	update_id: number;
 	message?: TgMessage;
@@ -139,8 +143,19 @@ function collectAttachments(msg: TgMessage): ChatAttachment[] {
  * by file_id and replies can be sent as OGG/Opus voice notes. The /model menu
  * is also Telegram-only: inline-keyboard presses come through the same poll as
  * callbacks and are answered via answerCallbackQuery. */
-export function createTelegramPlatform(token: string, allowedChatIds: string[]): Platform {
+export function createTelegramPlatform(
+	token: string,
+	allowedChatIds: string[],
+	allowedTelegramUserIds: string[] = [],
+): Platform {
 	const allowed = new Set(allowedChatIds.map(String));
+	// Group chats are keyed by the group id, so chat-id authorization alone lets
+	// every current and future member control the agent (issue #60). When
+	// sender allow-list is set, group/unknown-type messages additionally require
+	// the sender to be on it. Private chats match chat.id == sender.id, so they
+	// need no extra check. Empty = groups ignored (fail closed) — the gateway
+	// warns at startup when a group id is allow-listed without this list.
+	const allowedUsers = new Set(allowedTelegramUserIds.map(String));
 	return {
 		id: "telegram",
 		name: "Telegram",
@@ -183,6 +198,10 @@ export function createTelegramPlatform(token: string, allowedChatIds: string[]):
 						if (cq) {
 							const chatId = String(cq.message?.chat.id ?? cq.from.id);
 							if (!allowed.has(chatId)) continue;
+							// Button presses authorize the presser, not the chat: a group
+							// member must be on the sender allow-list too (issue #60).
+							if (!isPrivateChat(cq.message?.chat.type) && allowedUsers.size > 0 && !allowedUsers.has(String(cq.from.id))) continue;
+							if (!isPrivateChat(cq.message?.chat.type) && allowedUsers.size === 0) continue;
 							if (!remember(`cq:${cq.id}`)) continue;
 							yield {
 								ref: { platform: "telegram", chatId },
@@ -205,6 +224,12 @@ export function createTelegramPlatform(token: string, allowedChatIds: string[]):
 						if (!msg.text && !msg.voice && attachments.length === 0) continue;
 						const chatId = String(msg.chat.id);
 						if (!allowed.has(chatId)) continue;
+						// Issue #60: in groups the chat id is the group's, so chat-id
+						// authorization alone admits every member. Require the SENDER to
+						// be individually allow-listed. Fail closed: with no sender list
+						// configured, group messages are ignored (private chats are
+						// unaffected — chat.id == sender.id there).
+						if (msg.chat.type !== "private" && !allowedUsers.has(String(msg.from.id))) continue;
 						const date = msg.date;
 						if (date !== undefined && date < startedAt) continue;
 						// Fingerprint on whichever content the message carries. For a file-only

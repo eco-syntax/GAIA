@@ -5,7 +5,8 @@ import type { Config } from "./config.js";
 import { addSchedule, listSchedules, parseAt, parseEvery, removeSchedule } from "./scheduleStore.js";
 import { Type } from "@sinclair/typebox";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
-import type { ChatRef } from "./platform.js";
+import { chatKey, type ChatRef } from "./platform.js";
+import { webTools } from "./web.js";
 
 /**
  * Agent-facing scheduling tool, in the same style as memory.ts: a tool the LLM
@@ -151,11 +152,19 @@ export function startScheduler(
 				if (!due) continue;
 				console.log(`schedule ${sched.name} firing`);
 				const ref = scheduleChatRef(sched);
+				// No explicit tools: runOneShot excludes the ungated built-in read
+				// (issues #115/#121). Web tools cover the research a background task
+				// usually needs; file access flows through the gated bash tool shared
+				// with the owning chat — a scheduled command runs only when the chat's
+				// owner has bash open, otherwise the result says so. The old explicit
+				// ["read", "bash"] list re-enabled the ungated read AND made bash
+				// useless (NO_CHAT gate), so scheduled tasks could read anything and
+				// run nothing.
 				runOneShot(
 					config,
 					"You are completing a scheduled background task. Produce the requested output as concise plain text suitable for a chat message.",
 					sched.prompt,
-					{ tools: ["read", "bash"] },
+					{ customTools: webTools(() => {}), chatId: chatKey(ref) },
 				)
 					.then(async (text) => {
 						await deliver(ref, text);

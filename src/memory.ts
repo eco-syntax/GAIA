@@ -144,22 +144,28 @@ function appendMemoryLine(line: string, file = MEMORY_FILE): string {
 // fetched page or read file could silently inject instructions that persist
 // across every future conversation. Staged entries are persisted only when
 // the user runs /memory-approve (and discarded by /memory-deny).
-const stagedMemory: string[] = [];
+//
+// Staging is keyed by the destination memory file (issue #120): entries staged
+// in one chat must never be persisted into another chat's memory by that
+// other chat's /memory-approve, and must survive /memory-deny from an
+// unrelated chat.
+const stagedMemory = new Map<string, string[]>();
 
-/** Entries awaiting /memory-approve. */
-export function pendingMemoryStaged(): string[] {
-	return [...stagedMemory];
+/** Entries awaiting /memory-approve for one memory file. */
+export function pendingMemoryStaged(file = MEMORY_FILE): string[] {
+	return [...(stagedMemory.get(file) ?? [])];
 }
 
-/** Discard all staged entries (e.g. /memory-deny). Returns what was dropped. */
-export function dropStagedMemory(): string[] {
-	return stagedMemory.splice(0);
+/** Discard all staged entries for one memory file (e.g. /memory-deny).
+ * Returns what was dropped. */
+export function dropStagedMemory(file = MEMORY_FILE): string[] {
+	return stagedMemory.get(file)?.splice(0) ?? [];
 }
 
-/** Persist all staged entries (e.g. /memory-approve) into a memory file. */
+/** Persist all staged entries for one memory file (e.g. /memory-approve). */
 export function approveStagedMemory(file = MEMORY_FILE): string[] {
 	const saved: string[] = [];
-	for (const line of stagedMemory.splice(0)) saved.push(appendMemoryLine(line, file));
+	for (const line of dropStagedMemory(file)) saved.push(appendMemoryLine(line, file));
 	return saved;
 }
 
@@ -192,13 +198,17 @@ export function memoryTools(config: Config, isUntrustedContext: () => boolean = 
 			if (params.action === "save") {
 				const line = (params.content ?? "").replace(/\n+/g, " ").trim();
 				if (!line) return { content: [{ type: "text" as const, text: "Nothing to save." }], details: undefined };
-				if (current.includes(line) || stagedMemory.includes(line)) {
+				if (current.includes(line) || (stagedMemory.get(file) ?? []).includes(line)) {
 					return { content: [{ type: "text" as const, text: "Already remembered." }], details: undefined };
 				}
 				if (isUntrustedContext()) {
 					// Untrusted content is in context: the save may originate from a
-					// page or file, not the user. Stage it; only /memory-approve persists it.
-					stagedMemory.push(line);
+					// page or file, not the user. Stage it (keyed by THIS chat's memory
+					// file, issue #120); only /memory-approve in a chat sharing this
+					// memory persists it.
+					const staged = stagedMemory.get(file) ?? [];
+					staged.push(line);
+					stagedMemory.set(file, staged);
 					return {
 						content: [
 							{

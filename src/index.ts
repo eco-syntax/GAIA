@@ -28,8 +28,42 @@ import { saveAttachment } from "./attachments.js";
 import { basename } from "node:path";
 import { bashGate } from "./security.js";
 import { PLAN_PROMPT, ACT_PROMPT, MODE_ENDED } from "./plan.js";
+import { describeSandbox, enterSandbox, isContained, resolveSandboxMode, UNSAFE_FLAG, workspaceDir, type SandboxMode } from "./sandbox.js";
+
+const unsafeFlag = process.argv.includes(UNSAFE_FLAG);
+const sandbox: SandboxMode = resolveSandboxMode(loadConfig().sandbox, unsafeFlag);
+const workspace = workspaceDir(loadConfig().workspace);
+
+// Startup enforcement: an unsandboxed agent is the exception, and it must be
+// typed, not defaulted. Inside a container GAIA_SANDBOX=docker is set by the
+// image; bwrap re-execs below; anything else refuses unless --unsafe.
+if (!isContained(sandbox)) {
+	if (sandbox === "off" && !unsafeFlag) {
+		console.error(
+			`GAIA refused to start unsandboxed.\n` +
+				`Run it in a container (docker compose up — see README), install bubblewrap for the\n` +
+				`bwrap sandbox (sudo apt install bubblewrap), or pass ${UNSAFE_FLAG} to run bare\n` +
+				`(the agent then sees the host filesystem it runs on — know what that means).`,
+		);
+		process.exit(1);
+	}
+	if (sandbox === "off" && unsafeFlag) {
+		console.error("\x1b[31m⚠ UNSANDBOXED: the agent can read and write the host filesystem it runs on.\x1b[0m");
+		console.error("\x1b[31m  Prefer the container or bwrap; see the README. This banner prints every start.\x1b[0m");
+	}
+	// enterSandbox re-execs under bwrap and never returns; the exit code is the
+	// gateway's own, so the systemd unit's Restart= keeps working. The re-exec
+	// argv is the full original command line (loader flags + script + args).
+	const exitCode = await enterSandbox(
+		sandbox,
+		workspace,
+		[...process.execArgv, ...process.argv.slice(1)],
+	);
+	process.exit(exitCode);
+}
 
 const config = loadConfig();
+console.log(describeSandbox(sandbox, workspace));
 loadSchedules();
 const chats = new ChatSessions(config);
 const tools = webTools();
@@ -313,7 +347,15 @@ process.on("SIGTERM", shutdown);
 // ---------------------------------------------------------------------------
 const platforms: Record<string, Platform> = {};
 if (config.telegramBotToken) {
-	platforms.telegram = createTelegramPlatform(config.telegramBotToken, config.allowedChatIds ?? []);
+	platforms.telegram = createTelegramPlatform(config.telegramBotToken, config.allowedChatIds ?? [], config.allowedTelegramUserIds ?? []);
+	// Issue #60: allow-listing a group without a sender list silently ignores
+	// all group messages (the transport fails closed) — say so loudly here.
+	const groupIds = (config.allowedChatIds ?? []).filter((id) => id.startsWith("-"));
+	if (groupIds.length > 0 && (config.allowedTelegramUserIds ?? []).length === 0) {
+		console.warn(
+			`Telegram: group chat(s) ${groupIds.join(", ")} are allow-listed but allowedTelegramUserIds is empty — group messages are IGNORED (fail-closed, issue #60). Add the Telegram user ids who may act there, e.g. "allowedTelegramUserIds": [123456789].`,
+		);
+	}
 }
 if (config.slackBotToken && config.slackAppToken) {
 	platforms.slack = createSlackPlatform(config.slackBotToken, config.slackAppToken, config.allowedSlackChatIds ?? []);
@@ -545,7 +587,7 @@ async function handleMessage(msg: ChatMessage, prompt: string, voice: boolean): 
 		return;
 	}
 	if (prompt === "/memory") {
-		const staged = pendingMemoryStaged();
+		const staged = pendingMemoryStaged(memoryFileForChat(ref));
 		const snapshot = loadMemory(memoryFileForChat(ref));
 		await platform.sendText(
 			ref,
@@ -555,7 +597,9 @@ async function handleMessage(msg: ChatMessage, prompt: string, voice: boolean): 
 	}
 	if (prompt === "/memory-approve" || prompt === "/memory-deny") {
 		const approve = prompt === "/memory-approve";
-		const entries = approve ? approveStagedMemory(memoryFileForChat(ref)) : dropStagedMemory();
+		const entries = approve
+			? approveStagedMemory(memoryFileForChat(ref))
+			: dropStagedMemory(memoryFileForChat(ref));
 		if (entries.length === 0) {
 			await platform.sendText(ref, "Nothing pending.");
 			return;

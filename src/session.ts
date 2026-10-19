@@ -477,11 +477,17 @@ export async function runOneShot(
 		model,
 		thinkingLevel: "off",
 		tools: options?.tools,
-		// When no explicit allowlist is given, pi defaults to the full built-in
-		// set [read, bash, edit, write] — same ungated read/write exposure as
-		// chat sessions. Deny the ungated file tools so one-shots also go
-		// through the gated bash tool instead of raw file access.
-		excludeTools: options?.tools ? undefined : [...CHAT_EXCLUDED_TOOLS],
+		// Ungated file tools stay out of every one-shot, regardless of what the
+		// caller passes (issues #115/#116/#121): `read` resolves absolute paths
+		// and ~ with no sandbox, so it never re-enters a headless session —
+		// one-shots reach files through the gated bash tool instead. edit/write
+		// are excluded too unless the caller explicitly asked for them
+		// (/delegate needs them; the recall-summary one-shot passes [] and gets
+		// none — a truthy empty array previously DISABLED exclusion entirely).
+		excludeTools: [
+			"read",
+			...(["edit", "write"].some((t) => options?.tools?.includes(t)) ? [] : ["edit", "write"]),
+		],
 		customTools: [...(options?.customTools ?? []), bashGateTool(delegateChatId ?? options?.chatId ?? NO_CHAT)],
 		sessionManager: SessionManager.inMemory(),
 	});

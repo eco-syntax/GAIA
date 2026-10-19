@@ -33,6 +33,32 @@ const OUTPUT_CHAR_LIMIT = 20_000;
 const DEFAULT_TIMEOUT_S = 120;
 const MAX_TIMEOUT_S = 600;
 
+// Secret redaction: the agent's own credentials (bot tokens, model API keys)
+// are the one thing a filesystem sandbox cannot hide from it — the process
+// needs them to work, and they live in its environment. A prompt-injected
+// model can run `printenv` or `cat /proc/self/environ` and relay the values
+// into a chat reply or a websearch query (a search POSTs its query text to an
+// external server). Every tool that returns untrusted-through-the-agent data
+// runs its output through redactSecrets: any environment value that looks
+// like a credential (name matches TOKEN/KEY/SECRET/PASSWORD, value ≥ 12
+// chars) is replaced wherever it appears. This stops the direct dump; an
+// obfuscated exfiltration (base64-encode then decode remotely) is the
+// container boundary's job, not this filter's.
+const SECRET_VALUES = Object.entries(process.env)
+	.filter(([name, value]) => /TOKEN|KEY|SECRET|PASSWORD|PAT\b/i.test(name) && (value?.length ?? 0) >= 12)
+	.map(([, value]) => value!);
+
+/** Replace known secret values in tool output. Exported for tests. */
+export function redactSecrets(text: string): string {
+	let out = text;
+	for (const secret of SECRET_VALUES) {
+		// Split/join instead of replace: replace would treat $-patterns in
+		// tokens (Telegram tokens contain none, but API keys might) as regex.
+		while (out.includes(secret)) out = out.split(secret).join("[redacted]");
+	}
+	return out;
+}
+
 /** Headless one-shot sessions (scheduled tasks) have no user present to
  * approve a command, so their bash tool must always stay closed. This is a
  * namespaced sentinel that can never collide with a real chat key
@@ -206,18 +232,19 @@ export function bashGateTool(chatId: string, onAccess?: () => void): ToolDefinit
 			const timeoutS = Math.min(Math.max(timeout ?? DEFAULT_TIMEOUT_S, 1), MAX_TIMEOUT_S);
 			try {
 				const { stdout, stderr } = await execFileAsync("bash", ["-c", command], {
-					cwd: process.cwd(),
+					// Sandboxed runs aim the agent at its workspace, not the repo it
+					// was launched from (GAIA_WORKSPACE is set by the sandbox/compose).
+					cwd: process.env.GAIA_WORKSPACE ?? process.cwd(),
 					timeout: timeoutS * 1000,
 					maxBuffer: 1024 * 1024,
 					signal,
 				});
-				let text = (stdout + stderr).trim() || "(no output)";
+				let text = redactSecrets((stdout + stderr).trim()) || "(no output)";
 				if (text.length > OUTPUT_CHAR_LIMIT) text = `${text.slice(0, OUTPUT_CHAR_LIMIT)}\n\n[truncated]`;
 				return { content: [{ type: "text" as const, text }], details: undefined };
 			} catch (err) {
 				const e = err as { stdout?: string; stderr?: string; killed?: boolean; code?: number | string };
-				const out = (e.stdout ?? "") + (e.stderr ?? "");
-				let text = out.trim();
+				let text = redactSecrets((e.stdout ?? "") + (e.stderr ?? "")).trim();
 				if (text.length > OUTPUT_CHAR_LIMIT) text = `${text.slice(0, OUTPUT_CHAR_LIMIT)}\n\n[truncated]`;
 				if (signal?.aborted) throw new Error(`${text ? text + "\n\n" : ""}Command aborted`);
 				if (e.killed) throw new Error(`${text ? text + "\n\n" : ""}Command timed out after ${timeoutS} seconds`);
