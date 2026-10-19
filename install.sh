@@ -410,6 +410,16 @@ systemctl --user enable --now pi-gateway.service
 loginctl enable-linger "$USER" 2>/dev/null \
 	|| echo "note: enable-linger needs polkit/root — run 'sudo loginctl enable-linger $USER' once" >&2
 
+# sandbox: the gateway refuses to start unsandboxed, so bubblewrap must exist.
+if ! command -v bwrap >/dev/null && [ ! -x /usr/bin/bwrap ]; then
+	echo "==> installing bubblewrap (the gateway's OS sandbox)"
+	if command -v apt-get >/dev/null; then
+		sudo apt-get install -y bubblewrap || echo "WARNING: could not install bubblewrap — the gateway will refuse to start; run 'sudo apt install bubblewrap'" >&2
+	else
+		echo "WARNING: install bubblewrap manually (the gateway will refuse to start without it)" >&2
+	fi
+fi
+
 echo "==> 10/10 verify"
 "$BIN_DIR/greenpi" --version
 if command -v pi >/dev/null; then
@@ -419,3 +429,4 @@ echo "GAIA now runs on the fork and as a service:"
 echo "  systemctl --user status pi-gateway     # state"
 echo "  journalctl --user -u pi-gateway -f     # logs"
 echo "config lives in ~/.greenpi (fresh — add models.json/providers there as needed)"
+echo "sandbox: the agent sees only its workspace (~/gaia-workspace, set \"workspace\" in the config) and its state dir — see docs/security-plan.md"

@@ -52,24 +52,93 @@ scheduled tasks, web research, and local voice — built entirely on pi's SDK, n
   `git push --force`, `curl|sh`, …) are refused once more; approve that one
   command with `/bash force` (one-shot) or run it yourself. `/act` and
   `/delegate` are full approvals that skip this friction tier.
-  The systemd unit adds OS-level containment
-  (ProtectSystem/ProtectHome/PrivateTmp) as a second layer — see `docs/security-plan.md`.
+  The OS sandbox (container or bubblewrap) is the real boundary — the agent
+  only ever sees its workspace folder. See `docs/security-plan.md`.
 
 ## Setup
 
-> **Trust model**: every chat on an allow-list can run arbitrary shell on the
-> host via `/act` — that is the product. Only allow-list chats of people you
-> would give shell access to your machine.
+> **Trust model**: the agent runs shell commands. Who can trigger it (the chat
+> allow-list) and what it can touch (the sandbox) are separate questions — the
+> sandbox means "the agent can run shell" no longer implies "on your host".
+> Details in `docs/security-plan.md`; the short version is below.
 
-### Prerequisites
+### The sandbox in one paragraph
 
-- Linux with **systemd** user services (Debian/Ubuntu tested; on Windows use
-  WSL2 with systemd enabled — see below; macOS is not supported, install.sh
-  needs `systemctl`)
-- Node.js ≥ 22, git, npm, curl
-- Optional for voice: ffmpeg (`sudo apt install ffmpeg`)
+By default the agent runs inside a container and sees only two folders:
+`workspace/` (its files — the passage to and from you) and `data/` (its memory
+and conversation history, which survive resets). Your home directory, SSH keys,
+and config are invisible to it. Credentials (chat tokens, model API keys) are
+passed as environment variables and redacted from anything the agent prints.
+Running without the sandbox requires an explicit `--unsafe` flag and prints a
+red warning on every startup.
 
-### Install (Linux / WSL2)
+### Install with Docker (Windows, Mac, Linux)
+
+You need [Docker](https://docs.docker.com/get-docker/) (on Windows or Mac:
+**Docker Desktop**; on Linux: the Docker engine). No Node.js, no systemd, no
+WSL2 required.
+
+**1. Build the image.** The build packages GAIA together with its GreenPi fork
+from local tarballs (built automatically if needed — requires `~/GreenPi` on
+Linux, or a one-time `./install.sh`-less clone):
+
+```bash
+git clone https://github.com/eco-syntax/GAIA.git
+cd GAIA
+./docker/build.sh
+```
+
+**2. Configure tokens.** Copy `.env.example` to `.env` and fill in at least one
+chat platform. For Telegram: message [@BotFather](https://t.me/BotFather) →
+`/newbot` → paste the token into `GAIA_TELEGRAM_BOT_TOKEN`. Then send your bot
+any message once, and add the chat id from the gateway log to
+`GAIA_ALLOWED_CHAT_IDS` and restart (step 4) — only these chats can talk to it.
+
+**3. Pick a model.** The easiest path is the bundled llama.cpp service: put one
+`.gguf` model file in the `models/` folder, name it `model.gguf`, and set
+`GAIA_MODEL=llama-cpp/<model-name>` in `.env` (the exact id is in
+`docker compose logs llama` after first start). Any OpenAI-compatible server
+works too — point `LLAMA_BASE_URL` at it and set `GAIA_MODEL` to
+`provider/id` (e.g. `lmstudio/qwen3-8b`).
+
+**4. Start it:**
+
+```bash
+docker compose up -d                  # with your own model server
+docker compose --profile llama up -d  # with the bundled llama.cpp service
+```
+
+`docker compose logs -f gateway` shows what it is doing; chat commands work as
+documented below; `/status` shows the sandbox and model state.
+
+**5. Pass files to and from the agent.** The `workspace/` folder next to
+`docker-compose.yml` is the agent's file area — what you see is what it sees:
+
+- **Give the agent a file** (a PDF, a log, a spreadsheet): copy it into
+  `workspace/`. Tell the agent the path, e.g. "summarize /workspace/report.pdf".
+- **Get a file back**: the agent writes it into `/workspace` — it appears in
+  `workspace/` on your machine seconds later. Just ask ("save the summary to
+  /workspace/summary.md").
+- Nothing else on your computer is visible to the agent. To share more, add
+  another volume line under `volumes:` in `docker-compose.yml`
+  (e.g. `- ~/projects:/projects:ro` for read-only access) and restart.
+
+**Update or reset:**
+
+```bash
+git pull && ./docker/build.sh && docker compose up -d   # update GAIA
+docker compose down && docker compose up -d             # restart (workspace and data survive)
+sudo rm -rf data/*                                       # full reset — memory and history erased
+```
+
+Voice notes are not included in the image (use the Linux install below, or add
+piper/whisper to the image). A `.env` file is machine-local secret material —
+never commit it (it is already in `.gitignore`).
+
+### Install on Linux (systemd, no Docker) — Linux only
+
+For Linux hosts where you would rather run without Docker. Requires bubblewrap
+(for the sandbox — installed automatically if missing):
 
 ```bash
 git clone https://github.com/eco-syntax/GAIA.git ~/GAIA
@@ -77,18 +146,21 @@ cd ~/GAIA
 ./install.sh
 ```
 
-`./install.sh` also installs and starts a llama.cpp router as a systemd user
-service (pinned build, port 8080), downloads the apertus default model, and
-creates the gateway config interactively (token prompt, chat-id detection,
-llama.cpp + apertus default).
+`./install.sh` installs and starts a llama.cpp router as a systemd user service
+(pinned build, port 8080), downloads the apertus default model, and creates the
+gateway config interactively (token prompt, chat-id detection, llama.cpp +
+apertus default). The gateway starts inside a bubblewrap sandbox: the host home
+is invisible, and the agent sees only its workspace (`~/gaia-workspace` by
+default, set `"workspace"` in the config) and its state directory.
 
-> **Note**: `install.sh` installs a fork of pi ("GreenPi") and rewrites
-> GAIA's `package.json` to point at its local tarballs — that is expected, and
+> **Notes**: `install.sh` installs a fork of pi ("GreenPi") and rewrites GAIA's
+> `package.json` to point at its local tarballs — that is expected, and
 > committing those paths is not (the working tree will show changes; leave
-> them). To update GAIA later: `git pull` and re-run `./install.sh` (it is
-> idempotent).
+> them). To update GAIA later: `git pull` and re-run `./install.sh` (idempotent).
+> **macOS**: use the Docker install above; `install.sh` needs systemd.
 
-Manual setup, if you prefer:
+Manual setup (no sandbox — for development only; the gateway will refuse to
+start without `--unsafe`):
 
 ```bash
 npm install
@@ -97,6 +169,7 @@ cat > ~/.pi-gateway/config.json <<'EOF'
 {
   "telegramBotToken": "123:ABC",
   "allowedChatIds": [123456789],
+  "allowedTelegramUserIds": [123456789],
   "slackBotToken": "xoxb-…",
   "slackAppToken": "xapp-…",
   "allowedSlackChatIds": ["C0123ABC"],
@@ -125,39 +198,11 @@ Any single platform is enough — omit the others. Every configured platform nee
 allow-list populated (a chat id / channel id / room id per platform) or the gateway
 refuses to start; Slack needs both a bot token (`xoxb-…`) and a socket-mode app token
 (`xapp-…`). Schedules take an optional `"platform": "telegram" | "slack" | "discord" | "matrix"`
-(default `telegram`).
+(default `telegram`). `allowedTelegramUserIds` lists who may act in allow-listed
+GROUP chats — private chats don't need it; groups are ignored without it.
 
 Model is optional — omit it and pi's default resolution applies (local providers like LM Studio,
 Ollama, vLLM, llama.cpp are built in; see pi's providers doc).
-
-### Docker
-
-Runs as a non-root user with no access to host secrets; the only host path it
-touches is the `~/.pi-gateway` volume. Complements the bash approval gate and
-the systemd unit's hardening (see `docs/security-plan.md`).
-
-```bash
-docker build -t pi-gateway .
-docker run -d --name pi-gateway --restart=on-failure \
-  -v ~/.pi-gateway:/home/gaia/.pi-gateway \
-  --add-host host.docker.internal:host-gateway \
-  pi-gateway
-```
-
-On Windows, either run everything inside WSL2 (`wsl --install -d Ubuntu`, then
-enable systemd in `/etc/wsl.conf` with `[boot]` / `systemd=true`, and install
-as above) or use Docker Desktop with the commands here.
-
-Create `~/.pi-gateway/config.json` first (manual setup above). Point the model
-config at `host.docker.internal` instead of `localhost` — e.g. the llama.cpp
-router is `http://host.docker.internal:8080`. For voice, the `piperVoice` path
-must exist in the container: mount the voice dir (`-v /opt/piper/voices:/opt/piper/voices:ro`).
-
-Note: the Dockerfile's `npm ci` resolves GAIA's pinned GreenPi tarballs via the
-`file:` paths `install.sh` writes into `package.json` (pointing at `~/.greenpi`).
-Those paths do not exist inside a build, so the Docker path only works if you
-vendor the tarballs into the build context and adjust the Dockerfile — the WSL2
-path above avoids this entirely and is the supported install.
 
 ## Context-budget discipline
 
