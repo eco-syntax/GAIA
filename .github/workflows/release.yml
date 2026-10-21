@@ -1,0 +1,76 @@
+name: release
+
+# Publishes the gateway container image to GHCR on every version tag, so users
+# install with `docker compose up` — no Node, no WSL, no GreenPi build.
+# The image is built from this repo plus the GreenPi fork (built from source
+# in CI; set GREENPI_REF to pin a specific GreenPi commit/tag).
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  GREENPI_REPO: ColbyBrown/GreenPi
+  GREENPI_REF: main
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.GREENPI_REPO }}
+          ref: ${{ env.GREENPI_REF }}
+          path: GreenPi
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Build GreenPi tarballs
+        run: |
+          cd GreenPi
+          npm ci --no-fund --no-audit
+          node scripts/local-release.mjs --out "$HOME/.greenpi" --force \
+            --skip-check --skip-test --skip-install --skip-bun-install
+
+      - name: Stage docker build context
+        run: GREENPI_TARBALLS="$HOME/.greenpi/tarballs" STAGE_ONLY=1 ./docker/build.sh
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=ref,event=tag
+            type=raw,value=latest
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: docker/context
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true

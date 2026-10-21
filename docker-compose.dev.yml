@@ -1,0 +1,11 @@
+# Developer override: use the locally built image (./docker/build.sh) instead
+# of pulling from GHCR. Not needed for release installs.
+#
+#   ./docker/build.sh
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+services:
+  gateway:
+    image: pi-gateway:local
+    build:
+      context: docker/context
+      dockerfile: Dockerfile

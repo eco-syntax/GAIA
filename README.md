@@ -74,66 +74,94 @@ red warning on every startup.
 
 ### Install with Docker (Windows, Mac, Linux)
 
-You need [Docker](https://docs.docker.com/get-docker/) (on Windows or Mac:
-**Docker Desktop**; on Linux: the Docker engine). No Node.js, no systemd, no
-WSL2 required.
+You need [Docker Desktop](https://docs.docker.com/get-docker/) (Windows/Mac) or
+the Docker engine (Linux). Nothing else — no Node.js, no build tools. The image
+is published on every release to
+[`ghcr.io/eco-syntax/gaia`](https://github.com/eco-syntax/GAIA/pkgs/container/gaia).
 
-**1. Build the image.** The build packages GAIA together with its GreenPi fork
-from local tarballs (built automatically if needed — requires `~/GreenPi` on
-Linux, or a one-time `./install.sh`-less clone):
+**1. Get the two files.** From a release, download
+[`docker-compose.yml`](https://github.com/eco-syntax/GAIA/blob/main/docker-compose.yml)
+and [`.env.example`](https://github.com/eco-syntax/GAIA/blob/main/.env.example)
+into a new folder (or clone the repo). On Windows: plain PowerShell, no WSL
+needed — create the folder wherever you like, e.g. `C:\Users\you\GAIA`.
 
-```bash
-git clone https://github.com/eco-syntax/GAIA.git
-cd GAIA
-./docker/build.sh
-```
+**2. Configure tokens.** Copy `.env.example` to `.env` (same folder) and fill
+in at least one chat platform. For Telegram:
 
-**2. Configure tokens.** Copy `.env.example` to `.env` and fill in at least one
-chat platform. For Telegram: message [@BotFather](https://t.me/BotFather) →
-`/newbot` → paste the token into `GAIA_TELEGRAM_BOT_TOKEN`. Then send your bot
-any message once, and add the chat id from the gateway log to
-`GAIA_ALLOWED_CHAT_IDS` and restart (step 4) — only these chats can talk to it.
+- Message [@BotFather](https://t.me/BotFather) → `/newbot` → paste the token
+  into `GAIA_TELEGRAM_BOT_TOKEN=...`
+- Send your new bot any message once, then fetch the chat id:
+  ```bash
+  curl "https://api.telegram.org/bot<PASTE-TOKEN>/getUpdates"
+  ```
+  and put the `"chat":{"id":...}` number into `GAIA_ALLOWED_CHAT_IDS=...`.
+  Only these chats can talk to the agent.
+- If you add the bot to a **group** later, also set
+  `GAIA_ALLOWED_TELEGRAM_USER_IDS` (who may act there); group messages are
+  ignored without it.
 
-**3. Pick a model.** The easiest path is the bundled llama.cpp service: put one
-`.gguf` model file in the `models/` folder, name it `model.gguf`, and set
-`GAIA_MODEL=llama-cpp/<model-name>` in `.env` (the exact id is in
-`docker compose logs llama` after first start). Any OpenAI-compatible server
-works too — point `LLAMA_BASE_URL` at it and set `GAIA_MODEL` to
-`provider/id` (e.g. `lmstudio/qwen3-8b`).
+**3. Pick a model.** Two easy paths:
+
+- **LM Studio on the same machine** (recommended with a GPU): install it,
+  download a model, enable *Developer → Serve on Local Network* (port 1234),
+  and set in `.env`:
+  ```
+  GAIA_MODEL=lmstudio/<model-id>
+  LLAMA_BASE_URL=http://host.docker.internal:1234
+  ```
+  (`host.docker.internal` = "the machine running Docker" — works out of the box.)
+- **Bundled llama.cpp**: put your model file at `models/model.gguf` next to
+  `docker-compose.yml`, set `GAIA_MODEL=llama-cpp/<model-name>`, and use the
+  `--profile llama` start command below.
 
 **4. Start it:**
 
 ```bash
-docker compose up -d                  # with your own model server
-docker compose --profile llama up -d  # with the bundled llama.cpp service
+docker compose pull
+docker compose up -d                    # own model server
+docker compose --profile llama up -d    # bundled llama.cpp instead
+docker compose logs -f gateway          # watch it connect (Ctrl+C stops watching)
 ```
 
-`docker compose logs -f gateway` shows what it is doing; chat commands work as
-documented below; `/status` shows the sandbox and model state.
+Then message your bot. `/status` shows sandbox, model, and bash state.
 
-**5. Pass files to and from the agent.** The `workspace/` folder next to
-`docker-compose.yml` is the agent's file area — what you see is what it sees:
+**5. Files to and from the agent.** The `workspace/` folder next to
+`docker-compose.yml` is the agent's `/workspace` — same folder, two names:
 
-- **Give the agent a file** (a PDF, a log, a spreadsheet): copy it into
-  `workspace/`. Tell the agent the path, e.g. "summarize /workspace/report.pdf".
-- **Get a file back**: the agent writes it into `/workspace` — it appears in
-  `workspace/` on your machine seconds later. Just ask ("save the summary to
-  /workspace/summary.md").
-- Nothing else on your computer is visible to the agent. To share more, add
-  another volume line under `volumes:` in `docker-compose.yml`
-  (e.g. `- ~/projects:/projects:ro` for read-only access) and restart.
+- **Give it a file**: drop `report.pdf` into `workspace/`, then tell the agent
+  "read /workspace/report.pdf and summarize".
+- **Get a file back**: "save the summary to /workspace/summary.md" — it appears
+  in `workspace/` seconds later.
+- Nothing else on your computer is visible to it. To share more, add a volume
+  line under `volumes:` in `docker-compose.yml`
+  (e.g. `- ~/projects:/projects:ro` for read-only) and restart.
 
-**Update or reset:**
+**Update / reset:**
 
 ```bash
-git pull && ./docker/build.sh && docker compose up -d   # update GAIA
-docker compose down && docker compose up -d             # restart (workspace and data survive)
-sudo rm -rf data/*                                       # full reset — memory and history erased
+docker compose pull && docker compose up -d     # update to the latest release
+docker compose down && docker compose up -d     # restart (workspace and data survive)
+delete the contents of data/                    # full reset — memory and history erased
 ```
 
-Voice notes are not included in the image (use the Linux install below, or add
-piper/whisper to the image). A `.env` file is machine-local secret material —
-never commit it (it is already in `.gitignore`).
+To pin a version instead of `latest`, set `image: ghcr.io/eco-syntax/gaia:vX.Y.Z`
+in `docker-compose.yml`. A `.env` file is machine-local secret material — never
+commit it (already in `.gitignore`). Voice notes are not in the image (use the
+Linux install below, or add piper/whisper to the image).
+
+<details>
+<summary>Build the image yourself instead of pulling it</summary>
+
+If you'd rather not trust the published image (it is built by CI from this repo
+plus the GreenPi fork), build locally — needs Node 22 and a clone of both repos
+(`~/GreenPi` for the fork):
+
+```bash
+./docker/build.sh
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+```
+
+</details>
 
 ### Install on Linux (systemd, no Docker) — Linux only
 

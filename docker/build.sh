@@ -8,9 +8,10 @@
 #   2. copies GAIA + tarballs into docker/context/
 #   3. rewrites package.json's file:/home/<you>/.greenpi/... paths to the
 #      in-context greenpi/ folder
-#   4. runs docker build
+#   4. runs docker build  (skipped with STAGE_ONLY=1 — CI does its own buildx)
 #
-# Usage: ./docker/build.sh [image-tag]   (default: pi-gateway:local)
+# Usage: ./docker/build.sh [image-tag]              (default: pi-gateway:local)
+#        STAGE_ONLY=1 ./docker/build.sh             (context only, no build)
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -44,5 +45,10 @@ if grep -q "file:$HOME/.greenpi" "$CTX/package.json"; then
 	exit 1
 fi
 
+if [ "${STAGE_ONLY:-0}" = "1" ]; then
+	echo "Staged $CTX (STAGE_ONLY — skipping docker build)"
+	exit 0
+fi
+
 docker build -t "$TAG" "$CTX"
-echo "Built $TAG — start it with: docker compose up -d"
+echo "Built $TAG — start it with: docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d"

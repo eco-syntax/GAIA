@@ -7,10 +7,10 @@
 
 services:
   gateway:
-    image: pi-gateway:local
-    build:
-      context: docker/context
-      dockerfile: Dockerfile
+    # Prebuilt multi-arch image published by the release workflow (ghcr).
+    # Developers: build locally with ./docker/build.sh and run with
+    #   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+    image: ghcr.io/eco-syntax/gaia:latest
     env_file: .env
     environment:
       # The gateway's model server: the llama service below (default), or your
