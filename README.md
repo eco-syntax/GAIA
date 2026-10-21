@@ -72,6 +72,16 @@ passed as environment variables and redacted from anything the agent prints.
 Running without the sandbox requires an explicit `--unsafe` flag and prints a
 red warning on every startup.
 
+### Which install is for me?
+
+| You are on... | Install | Notes |
+|---|---|---|
+| **Windows 11** | [Docker Desktop quickstart](#windows-11-quickstart) | No WSL2, no Node, no build — two files + `docker compose up` |
+| **macOS** (Apple Silicon or Intel) | [Docker install](#install-with-docker-windows-mac-linux) | Same as Windows minus the PowerShell specifics; arm64 + amd64 images published |
+| **Linux, want the easy path** | [Docker install](#install-with-docker-windows-mac-linux) | Same two files; `docker compose` via the engine or the compose plugin |
+| **Linux, want voice notes / no Docker** | [Native install](#install-on-linux-systemd-no-docker) | systemd + bubblewrap sandbox; piper/whisper voice |
+| **Already running WSL2** | Either — inside WSL use the [native install](#install-on-linux-systemd-no-docker), or just Docker Desktop on Windows and skip WSL entirely | |
+
 ### Install with Docker (Windows, Mac, Linux)
 
 You need [Docker Desktop](https://docs.docker.com/get-docker/) (Windows/Mac) or
@@ -168,6 +178,43 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
 ```
 
 </details>
+
+### Windows 11 quickstart
+
+The five-step Docker walkthrough above, with the Windows specifics filled in:
+
+1. **Install Docker Desktop** — default options, WSL2 backend. In
+   Settings → General, enable **"Start Docker Desktop when you sign in"**
+   (this is what makes the bot survive reboots on an always-on box).
+2. **Get the two files** — from a release, save `docker-compose.yml` and
+   `.env.example` into a folder like `C:\Users\you\GAIA`. Plain PowerShell —
+   no WSL2, no Node, no build. (Cloning the repo works too.)
+3. **Fill in `.env`** (Notepad is fine) — Telegram token + chat id per the
+   walkthrough above, plus the model: LM Studio on the same PC
+   (`GAIA_MODEL=lmstudio/<id>` + `LLAMA_BASE_URL=http://host.docker.internal:1234`,
+   with *Developer → Serve on Local Network* enabled) or a `models/model.gguf`
+   with the `--profile llama` start command.
+4. **Start** — PowerShell, regular user:
+   ```powershell
+   cd C:\Users\you\GAIA
+   docker compose pull
+   docker compose up -d
+   ```
+   Message the bot, then run `/status` — it should say `sandbox: docker
+   container`.
+5. **Files** — `C:\Users\you\GAIA\workspace` *is* the agent's `/workspace`.
+   Drop files in, ask for files back; nothing else on the PC is visible.
+
+Always-on settings: keep the PC plugged in and set
+Settings → System → Power → **Sleep: Never** (a sleeping PC is a dark bot).
+Updating later: `docker compose pull && docker compose up -d` (and grab the new
+`docker-compose.yml` from a release when one ships). Resetting: delete the
+contents of `data\` — memory and history erased, `workspace\` untouched.
+
+Using WSL2 instead of Docker Desktop? Possible, but you gain nothing unless
+you specifically want the native install's voice features — in that case, enable
+systemd in WSL (`wsl --install -d Ubuntu`, add `[boot]\nsystemd=true` to
+`/etc/wsl.conf`) and follow the Linux install below.
 
 ### Install on Linux (systemd, no Docker) — Linux only
 
