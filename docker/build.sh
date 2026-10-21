@@ -37,11 +37,12 @@ cp -r "$TARBALL_SRC"/*.tgz "$CTX/greenpi/"
 cp -r src tsconfig.json "$CTX/"
 cp docker/Dockerfile "$CTX/Dockerfile"
 
-# Point the image's npm install at the in-context tarballs. sed handles the
-# "file:/home/<you>/.greenpi/tarballs/<name>.tgz" paths install.sh wrote.
-sed "s|file:$HOME/.greenpi/tarballs/|file:./greenpi/|g" package.json > "$CTX/package.json"
-if grep -q "file:$HOME/.greenpi" "$CTX/package.json"; then
-	echo "package.json still references $HOME/.greenpi after rewrite — unsupported path shape" >&2
+# Point the image's npm install at the in-context tarballs. GAIA's committed
+# package.json carries machine-local file: paths (whatever home install.sh ran
+# on), so match any absolute path ending in /tarballs/.
+sed -E "s|file:[^\"]*/tarballs/|file:./greenpi/|g" package.json > "$CTX/package.json"
+if grep -qE 'file:[^" ]*tarballs/' "$CTX/package.json"; then
+	echo "package.json still references tarballs outside the context after rewrite" >&2
 	exit 1
 fi
 
