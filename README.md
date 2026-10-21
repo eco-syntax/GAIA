@@ -79,6 +79,12 @@ the Docker engine (Linux). Nothing else — no Node.js, no build tools. The imag
 is published on every release to
 [`ghcr.io/eco-syntax/gaia`](https://github.com/eco-syntax/GAIA/pkgs/container/gaia).
 
+**0. One-time for the repo owner** (already done for v0.2.0+ — listed here for
+the first-ever publish): newly published GHCR packages start **private**. After
+the first release workflow runs, open the repo → Packages → `gaia` → Package
+settings → change visibility to **Public**. Until then, `docker compose pull`
+fails with "unauthorized".
+
 **1. Get the two files.** From a release, download
 [`docker-compose.yml`](https://github.com/eco-syntax/GAIA/blob/main/docker-compose.yml)
 and [`.env.example`](https://github.com/eco-syntax/GAIA/blob/main/.env.example)
