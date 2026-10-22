@@ -62,13 +62,23 @@ The fastest way to run GAIA with local models.
    - Copy `.env.example` to `.env`.
    - Get a Telegram bot token from [@BotFather](https://t.me/BotFather) and set `GAIA_TELEGRAM_BOT_TOKEN=...` in `.env`.
    - Find your Chat ID via `curl "https://api.telegram.org/bot<TOKEN>/getUpdates"` and set `GAIA_ALLOWED_CHAT_IDS=...` in `.env`.
-3. **Connect a Model**:
-   - **LM Studio**: Set `GAIA_MODEL=lmstudio/<id>` and `LLAMA_BASE_URL=http://host.docker.internal:1234` (enable "Serve on Local Network" in LM Studio).
+3. **Choose a Model Path**:
+
+   **Option A: All-in-One (Bundled llama.cpp)** — *Best for a quick, self-contained setup*
+   - Drop a `.gguf` file into the `./models` folder and rename it to `model.gguf`.
+   - Launch with: `docker compose --profile llama up -d`
+
+   **Option B: Use your own (LM Studio/Ollama)** — *Best if you already have a model running or have a GPU*
+   - Set `GAIA_MODEL=lmstudio/<id>` (or your provider) in `.env`.
+   - Set `LLAMA_BASE_URL=http://host.docker.internal:1234` (for LM Studio) in `.env`.
+   - Launch with: `docker compose up -d`
+
 4. **Launch**:
    ```bash
    docker compose pull
-   docker compose up -d
    ```
+   *(Then follow the specific launch command for your chosen option above.)*
+
 5. **Verify**: Message your bot and run `/status`.
 
 ---
