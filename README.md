@@ -65,7 +65,7 @@ The fastest way to run GAIA with local models.
 3. **Choose a Model Path**:
 
    **Option A: All-in-One (Bundled llama.cpp)** — *Best for a quick, self-contained setup*
-   - Drop a `.gguf` file into the `./models` folder and rename it to `model.gguf`.
+   - The image ships no LLM weights: the bundled server loads `./models/model.gguf` (`docker-compose.yml` passes it as `-m`). Grab the default model from Hugging Face — [`Colby/apertus-v1.5-8b-text-Q4_K_M-GGUF`](https://huggingface.co/Colby/apertus-v1.5-8b-text-Q4_K_M-GGUF) — or supply your own `.gguf` and set a matching `GAIA_MODEL`.
    - Launch with: `docker compose --profile llama up -d`
 
    **Option B: Use your own (LM Studio/Ollama)** — *Best if you already have a model running or have a GPU*
@@ -95,6 +95,27 @@ The fastest way to run GAIA with local models.
 Used for platform tokens (Slack, Discord, Matrix) and advanced model routing:
 - `planModel`: A smaller/faster model for `/plan` mode.
 - `actModel`: A stronger model for `/act` or `/delegate` modes.
+
+---
+
+## 🛠 Installation
+
+### Docker (Windows, Mac, Linux)
+Recommended for all platforms. Requires [Docker Desktop](https://docs.docker.com/get-docker/) (Windows/Mac) or Docker Engine (Linux).
+- **Image**: `ghcr.io/eco-syntax/gaia`
+- **Setup**: Follow the [Quick Start](#quick-start-docker) above.
+
+### Linux Native (systemd, no Docker)
+For Linux hosts where you would rather run without Docker. Requires bubblewrap (for the sandbox — installed automatically if missing):
+```bash
+git clone https://github.com/eco-syntax/GAIA.git ~/GAIA
+cd ~/GAIA
+./install.sh
+```
+*Note: `install.sh` installs a fork of `pi` ("GreenPi") to manage local dependencies and **automatically downloads the Apertus model**.*
+
+### macOS
+Use the **Docker installation** described above. The `install.sh` script requires `systemd`, which is not native to macOS.
 
 ---
 
