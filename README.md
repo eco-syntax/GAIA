@@ -1,85 +1,70 @@
-# pi-gateway
+# GAIA (Green AI Assistant)
 
-A minimal Hermes-style companion for [pi](https://github.com/earendil-works/pi): chat gateway, scheduled tasks, web research, and local voice — built entirely on pi's SDK, no pi-core changes.
+GAIA is a context-disciplined, local-first agent gateway built on [GreenPi](https://github.com/ColbyBrown/GreenPi)—a specialized fork of [pi](https://github.com/earendil-works/pi) optimized for high-performance, eco-friendly local LLM inference.
 
----
-
-## Table of Contents
-- [Core Features](#core-features)
-- [Command Reference](#command-reference)
-- [Security & Sandbox](#security--sandbox)
-- [Quick Start (Docker)](#quick-start-docker)
-- [Installation](#installation)
-- [Configuration](#configuration)
-- [Context Budgeting](#context-budgeting)
-- [Not Built (Deliberately)](#not-built-deliberately)
+While most agents are designed for massive cloud-based context windows, GAIA is engineered for the reality of local models: **frugality is a feature, not a limitation.**
 
 ---
 
-## Core Features
+## 🌿 The Philosophy: Frugal Intelligence
 
-- **Multi-platform Chat**: Supports Telegram, Slack, Discord, and Matrix. Each chat gets its own persistent `pi` session (full agent: files, bash, skills). Configure platforms in `~/.pi-gateway/config.json`.
-- **Identity Linking**: Bridge chats across platforms using `/link`. Linked identities share one memory file and recall only searches from their own logs. Restricted to 1:1 DMs.
-- **Scheduled Tasks**: Run headless `pi` turns on a timer. Schedules are defined in `~/.pi-gateway/schedules.json` as simple `{name, every|at, chatId, prompt}` records. Results can be automatically injected into chat logs for easy follow-up.
-- **Web Research**: Built-in `websearch` and `fetchpage` tools (via DuckDuckGo; no API keys required). Full page text is saved to `~/.pi-gateway/research/`.
-- **Memory & Recall**: Durable user facts live in a capped `MEMORY.md`. The `recall` tool provides full-text search (SQLite FTS5) over all persisted session logs, with a one-shot LLM summary of hits.
-- **Plan / Act / Delegate**: A conversational workflow optimized for local-model context budgets:
-  - `/plan`: Read-only exploration and planning mode.
-  - `/act`: Implementation mode. Invoking `/act` acts as a single approval for bash commands.
-  - `/delegate <file>`: Runs a plan in a **fresh headless session** seeded only with the plan file. This is the "frugal-context escape hatch" to prevent long conversations from blowing your context window.
-- **Voice**: Supports voice notes via Telegram. Uses `piper` for text-to-speech and `whisper.cpp` for speech-to-text (English models included in Docker).
-- **Attachments**: Automatically handles documents, images, and files attached to messages. Files are offered to the agent via the `open_attachment` tool.
+Every token used is energy consumed. GAIA prioritizes:
+- **Minimal Context Waste**: Strategies to prevent long conversations from bloating local model context windows.
+- **Local-First Inference**: Built-in support for LM Studio, Ollama, llama.cpp, and vLLM.
+- **Identity-Linked Memory**: Durable, searchable, and scoped memory that follows you across platforms.
+- **Secure Autonomy**: A "container-first" security model that allows the agent to work for you without risking your host.
 
 ---
 
-## Command Reference
+## 🚀 Core Pillars
+
+### 1. Context Discipline (The Workflow)
+To prevent "context exhaustion" in local models, GAIA implements a three-stage workflow:
+- **`/plan` (Exploration)**: A read-only mode for browsing code, searching web, and discussing approach. The model's goal is to produce a decision-complete markdown plan.
+- **`/act` (Implementation)**: A single-session implementation mode where the agent executes the plan. Invoking `/act` acts as a continuous approval for bash commands.
+- **`/delegate <file>` (Execution)**: The "frugal-context escape hatch." GAIA spawns a **fresh, headless session** seeded *only* with your plan. This ensures the implementation phase has maximum available context, unburdened by the long history of the planning conversation.
+
+### 2. Security & Containment
+GAIA treats every tool response (web, shell, files) as untrusted.
+- **OS Sandbox**: By default, the agent runs in a Docker container or `bubblewrap` sandbox. It only sees the `workspace/` (for files) and `data/` (for memory) directories.
+- **The Bash Gate**: Shell access is **deny-by-default**. You must explicitly enable it via `/bash`. High-impact commands (like `rm -r` or `sudo`) require a second confirmation via `/bash force`.
+
+### 3. Identity-Linked Memory & Recall
+- **Identity Bridging**: Use `/link` to connect your Telegram, Slack, Discord, or Matrix accounts.
+- **Unified Memory**: Linked identities share a single, durable `MEMORY.md`.
+- **FTS5 Recall**: The `recall` tool provides high-speed, full-text search over all historical session logs, providing a one-shot summary of relevant past context.
+
+---
+
+## 🛠 Command Reference
 
 | Command | Description |
 |:---|:---|
-| `/new` | Start a fresh session (prints current model). |
-| `/model` | Interactive menu to pick a provider and model. |
+| `/new` | Start a fresh session. |
+| `/model` | Pick a provider and model (local or eco-friendly cloud). |
+| `/plan` | Enter read-only planning mode. |
+| `/act` | Enter implementation mode (approves bash). |
+| `/delegate <file>`| Run a plan in a fresh, zero-history session. |
+| `/link [code]` | Bridge identity to another platform. |
+| `/bash` | Enable/disable the bash tool for this session. |
+| `/bash force` | One-shot bypass for high-impact commands. |
+| `/status` | Check sandbox, model, and bash gate state. |
 | `/stop` | Interrupt a running turn. |
-| `/link [code]` | Link identity to another chat platform. |
-| `/whoami` | Show the current linked identity. |
-| `/plan` | Toggle read-only planning mode. |
-| `/act` | Toggle implementation mode (approves bash). |
-| `/done` | Exit plan/act mode and re-lock bash. |
-| `/delegate <file>`| Run a plan in a fresh, focused headless session. |
-| `/status` | Show sandbox, model, and bash state. |
-| `/bash` | Enable bash tool for the current session. |
-| `/bash force` | Single-use approval for "high-blast-radius" commands. |
-| `/restart` | Restart the gateway. |
 
 ---
 
-## Security & Sandbox
+## ⚡ Quick Start (Docker)
 
-GAIA is designed with a **container-first** security model. The agent runs inside a sandbox (Docker or `bubblewrap`) and sees only two folders:
-1. `workspace/`: The file passage to and from you.
-2. `data/`: Its memory and conversation history.
+The fastest way to run GAIA with local models.
 
-Your host files, SSH keys, and credentials are invisible to the agent. Running without a sandbox requires the `--unsafe` flag and triggers a red warning on every startup.
-
-### The Bash Gate
-The built-in `bash` tool is **deny-by-default**. You must approve it for a session using `/bash`. Even after approval, "high-blast-radius" commands (like `rm -r` or `sudo`) require a second confirmation via `/bash force`.
-
-For more details, see [docs/security-plan.md](./docs/security-plan.md).
-
----
-
-## Quick Start (Docker)
-
-The fastest way to get running on Windows, Mac, or Linux.
-
-1. **Prepare Files**: Download `docker-compose.yml` and `.env.example` from a release into a new folder.
-2. **Configure Telegram**: 
-   - Create a bot via [@BotFather](https://t.me/BotFather) and get your token.
-   - Set `GAIA_TELEGRAM_BOT_TOKEN=...` in your `.env` file.
-   - Get your Chat ID via `curl "https://api.telegram.org/bot<TOKEN>/getUpdates"` and set `GAIA_ALLOWED_CHAT_IDS=...`.
-3. **Pick a Model**:
-   - **LM Studio**: Set `GAIA_MODEL=lmstudio/<id>` and `LLAMA_BASE_URL=http://host.docker.internal:1234` (ensure "Serve on Local Network" is enabled in LM Studio).
-   - **Bundled llama.cpp**: Put a model in `models/model.gguf` and use the `--profile llama` start command.
-4. **Start**:
+1. **Prepare**: Download `docker-compose.yml` and `.env.example` from a release.
+2. **Configure Telegram**:
+   - Get a bot token from [@BotFather](https://t.me/BotFather).
+   - Set `GAIA_TELEGRAM_BOT_TOKEN=...` in `.env`.
+   - Find your Chat ID via `curl "https://api.telegram.org/bot<TOKEN>/getUpdates"` and set `GAIA_ALLOWED_CHAT_IDS=...`.
+3. **Connect a Model**:
+   - **LM Studio**: Set `GAIA_MODEL=lmstudio/<id>` and `LLAMA_BASE_URL=http://host.docker.internal:1234` (enable "Serve on Local Network" in LM Studio).
+4. **Launch**:
    ```bash
    docker compose pull
    docker compose up -d
@@ -88,59 +73,24 @@ The fastest way to get running on Windows, Mac, or Linux.
 
 ---
 
-## Installation
+## ⚙️ Configuration
 
-### Docker (Windows, Mac, Linux)
-Recommended for all platforms. Requires [Docker Desktop](https://docs.docker.com/get-docker/) (Windows/Mac) or Docker Engine (Linux).
-- **Image**: `ghcr.io/eco-syntax/gaia`
-- **Setup**: Follow the [Quick Start](#quick-start-docker) above.
-
-### Linux Native (systemd + bubblewrap)
-For users who want to avoid Docker and use a local `systemd` user service.
-```bash
-git clone https://github.com/eco-syntax/GAIA.git ~/GAIA
-cd ~/GAIA
-./install.sh
-```
-*Note: `install.sh` installs a fork of `pi` ("GreenPi") to manage local dependencies.*
-
-### macOS
-Use the **Docker installation** described above. The `install.sh` script requires `systemd`, which is not native to macOS.
-
----
-
-## Configuration
-
-Configuration is handled via two main files:
-
-### 1. Environment Variables (`.env`)
-Used for sensitive secrets and global settings. **Never commit this file.**
+### Environment Variables (`.env`)
 - `GAIA_TELEGRAM_BOT_TOKEN`: Your Telegram bot token.
-- `GAIA_ALLOWED_CHAT_IDS`: Comma-separated list of allowed Telegram chat IDs.
-- `GAIA_MODEL`: The default model to use.
-- `LLAMA_BASE_URL`: URL for local model providers (e.g., LM Studio).
+- `GAIA_ALLOWED_CHAT_IDS`: Comma-separated allowed chat IDs.
+- `GAIA_MODEL`: Default model (e.g., `ollama/llama3`).
+- `LLAMA_BASE_URL`: URL for local providers like LM Studio.
 
-### 2. Gateway Config (`~/.pi-gateway/config.json`)
-Used for platform-specific tokens and advanced settings.
-- `slackBotToken`, `discordBotToken`, `matrixAccessToken`, etc.
-- `planModel` / `actModel`: Specific models for different workflow phases.
-- `piperVoice`: Path to local Piper voice models.
-
----
-
-## Context Budgeting
-
-Designed to work efficiently with 32K-token local models:
-- **Session Management**: Chat sessions start with a lean prompt.
-- **Tool Capping**: `fetchpage` and other tools cap results (~5K tokens) and save full text to disk.
-- **Headless Tasks**: Scheduled tasks run in one-shot sessions, preserving chat history.
-- **Delegation**: `/delegate` runs implementation in a fresh session, keeping planning history out of the implementation context.
+### Gateway Config (`~/.pi-gateway/config.json`)
+Used for platform tokens (Slack, Discord, Matrix) and advanced model routing:
+- `planModel`: A smaller/faster model for `/plan` mode.
+- `actModel`: A stronger model for `/act` or `/delegate` modes.
 
 ---
 
-## Not Built (Deliberately)
+## 📖 Technical Architecture
 
-- Skill packs
-- User modeling
-- Job DSLs
-- Account integrations beyond MCP servers (use `pi-mcp-adapter` for Google/M365)
+GAIA is built on the **GreenPi** engine, which provides:
+- **Context-Aware Tooling**: Custom implementations of `read`, `edit`, and `write` that prevent prompt injection and ensure file access remains within the sandbox.
+- **Frugal Web Tools**: `fetchpage` caps results to prevent context flooding and saves full text to disk.
+- **Memory Staging**: Memory updates from untrusted sources (web, command output) are staged for user approval via `/memory-approve`.
