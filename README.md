@@ -36,7 +36,8 @@ scheduled tasks, web research, and local voice — built entirely on pi's SDK, n
   (and typed directly on every other platform). Sending any new message also interrupts a running
   turn (Hermes-style interrupt-and-redirect).
 - **Voice**: replies as Telegram voice notes via local `piper` (+ ffmpeg for OGG/Opus). Incoming
-  voice notes are transcribed locally via whisper.cpp (set `"whisperModel": "/path/to/ggml-model.bin"`
+  voice notes are transcribed locally via whisper.cpp (the Docker image ships both plus English
+  models; native installs set `"whisperModel": "/path/to/ggml-model.bin"`
   in the config; needs a `whisper-cli`/`whisper` binary and ffmpeg on PATH).
 - **Attachments**: documents, images, and files attached to a message (Telegram, Slack, Discord,
   and Matrix) are downloaded into a per-chat inbox and offered to the agent through the
@@ -76,10 +77,10 @@ red warning on every startup.
 
 | You are on... | Install | Notes |
 |---|---|---|
-| **Windows 11** | [Docker Desktop quickstart](#windows-11-quickstart) | No WSL2, no Node, no build — two files + `docker compose up` |
+| **Windows 11** | [Docker Desktop quickstart](#windows-11-quickstart) | No WSL2, no Node, no build — two files + `docker compose up`; voice included |
 | **macOS** (Apple Silicon or Intel) | [Docker install](#install-with-docker-windows-mac-linux) | Same as Windows minus the PowerShell specifics; arm64 + amd64 images published |
 | **Linux, want the easy path** | [Docker install](#install-with-docker-windows-mac-linux) | Same two files; `docker compose` via the engine or the compose plugin |
-| **Linux, want voice notes / no Docker** | [Native install](#install-on-linux-systemd-no-docker) | systemd + bubblewrap sandbox; Docker install includes voice too |
+| **Linux, want voice notes / no Docker** | [Native install](#install-on-linux-systemd-no-docker) | systemd + bubblewrap sandbox (the Docker install also includes voice) |
 | **Already running WSL2** | Either — inside WSL use the [native install](#install-on-linux-systemd-no-docker), or just Docker Desktop on Windows and skip WSL entirely | |
 
 ### Install with Docker (Windows, Mac, Linux)
@@ -208,6 +209,9 @@ The five-step Docker walkthrough above, with the Windows specifics filled in:
    container`.
 5. **Files** — `C:\Users\you\GAIA\workspace` *is* the agent's `/workspace`.
    Drop files in, ask for files back; nothing else on the PC is visible.
+6. **Voice** — works out of the box, nothing to configure: send the bot a
+   voice note and it transcribes it; replies come back as voice notes too
+   (piper + whisper.cpp and their English models are baked into the image).
 
 Always-on settings: keep the PC plugged in and set
 Settings → System → Power → **Sleep: Never** (a sleeping PC is a dark bot).
