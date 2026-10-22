@@ -57,11 +57,11 @@ GAIA treats every tool response (web, shell, files) as untrusted.
 
 The fastest way to run GAIA with local models.
 
-1. **Prepare**: Download `docker-compose.yml` and `.env.example` from a release.
-2. **Configure Telegram**:
-   - Get a bot token from [@BotFather](https://t.me/BotFather).
-   - Set `GAIA_TELEGRAM_BOT_TOKEN=...` in `.env`.
-   - Find your Chat ID via `curl "https://api.telegram.org/bot<TOKEN>/getUpdates"` and set `GAIA_ALLOWED_CHAT_IDS=...`.
+1. **Prepare**: Download and extract the [release ZIP](https://github.com/eco-syntax/GAIA/releases) (or clone the repo) into a new folder.
+2. **Configure Environment**:
+   - Copy `.env.example` to `.env`.
+   - Get a Telegram bot token from [@BotFather](https://t.me/BotFather) and set `GAIA_TELEGRAM_BOT_TOKEN=...` in `.env`.
+   - Find your Chat ID via `curl "https://api.telegram.org/bot<TOKEN>/getUpdates"` and set `GAIA_ALLOWED_CHAT_IDS=...` in `.env`.
 3. **Connect a Model**:
    - **LM Studio**: Set `GAIA_MODEL=lmstudio/<id>` and `LLAMA_BASE_URL=http://host.docker.internal:1234` (enable "Serve on Local Network" in LM Studio).
 4. **Launch**:
