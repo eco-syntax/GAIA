@@ -98,6 +98,8 @@ const ENV_OVERRIDES: Record<string, (raw: Partial<Config>, v: string) => void> =
 	GAIA_ACT_MODEL: (raw, v) => (raw.actModel = parseModelSpec(v, raw.actModel)),
 	GAIA_WORKSPACE: (raw, v) => (raw.workspace = v),
 	GAIA_SANDBOX: (raw, v) => (raw.sandbox = v as Config["sandbox"]),
+	GAIA_PIPER_VOICE: (raw, v) => (raw.piperVoice = v),
+	GAIA_WHISPER_MODEL: (raw, v) => (raw.whisperModel = v),
 };
 
 /** "provider/id" — a bare id is ambiguous once catalogs mix providers. */

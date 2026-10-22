@@ -79,7 +79,7 @@ red warning on every startup.
 | **Windows 11** | [Docker Desktop quickstart](#windows-11-quickstart) | No WSL2, no Node, no build — two files + `docker compose up` |
 | **macOS** (Apple Silicon or Intel) | [Docker install](#install-with-docker-windows-mac-linux) | Same as Windows minus the PowerShell specifics; arm64 + amd64 images published |
 | **Linux, want the easy path** | [Docker install](#install-with-docker-windows-mac-linux) | Same two files; `docker compose` via the engine or the compose plugin |
-| **Linux, want voice notes / no Docker** | [Native install](#install-on-linux-systemd-no-docker) | systemd + bubblewrap sandbox; piper/whisper voice |
+| **Linux, want voice notes / no Docker** | [Native install](#install-on-linux-systemd-no-docker) | systemd + bubblewrap sandbox; Docker install includes voice too |
 | **Already running WSL2** | Either — inside WSL use the [native install](#install-on-linux-systemd-no-docker), or just Docker Desktop on Windows and skip WSL entirely | |
 
 ### Install with Docker (Windows, Mac, Linux)
@@ -162,8 +162,12 @@ delete the contents of data/                    # full reset — memory and hist
 
 To pin a version instead of `latest`, set `image: ghcr.io/eco-syntax/gaia:vX.Y.Z`
 in `docker-compose.yml`. A `.env` file is machine-local secret material — never
-commit it (already in `.gitignore`). Voice notes are not in the image (use the
-Linux install below, or add piper/whisper to the image).
+commit it (already in `.gitignore`).
+
+Voice works in the container out of the box: the image ships piper (replies as
+Telegram voice notes), whisper.cpp (incoming voice notes are transcribed), and
+their English models — same pinned downloads as the native install. Send a
+voice note to test. (Models are baked at build time; ~210 MB of image size.)
 
 <details>
 <summary>Build the image yourself instead of pulling it</summary>
@@ -211,10 +215,11 @@ Updating later: `docker compose pull && docker compose up -d` (and grab the new
 `docker-compose.yml` from a release when one ships). Resetting: delete the
 contents of `data\` — memory and history erased, `workspace\` untouched.
 
-Using WSL2 instead of Docker Desktop? Possible, but you gain nothing unless
-you specifically want the native install's voice features — in that case, enable
-systemd in WSL (`wsl --install -d Ubuntu`, add `[boot]\nsystemd=true` to
-`/etc/wsl.conf`) and follow the Linux install below.
+Using WSL2 instead of Docker Desktop? Possible, but Docker Desktop needs
+nothing from WSL — use it unless you specifically want the native install's
+systemd setup, in which case enable systemd in WSL (`wsl --install -d Ubuntu`,
+add `[boot]\nsystemd=true` to `/etc/wsl.conf`) and follow the Linux install
+below.
 
 ### Install on Linux (systemd, no Docker) — Linux only
 
