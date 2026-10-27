@@ -7,13 +7,13 @@ import { writePlanTool } from "../src/plan.js";
 import { mkdirSync, rmSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
-const TMP = process.env.PI_GATEWAY_STATE!;
-if (!TMP) throw new Error("set PI_GATEWAY_STATE to a temp dir for this test");
+const TMP = process.env.GAIA_STATE!;
+if (!TMP) throw new Error("set GAIA_STATE to a temp dir for this test");
 
 // runDelegate calls loadConfig, which requires at least one platform. Stub a
 // minimal telegram config so the gate passes; no network is used.
 import { writeFileSync } from "node:fs";
-mkdirSync(TMP, { recursive: true }); // PI_GATEWAY_STATE may not exist yet
+mkdirSync(TMP, { recursive: true }); // GAIA_STATE may not exist yet
 writeFileSync(join(TMP, "config.json"), JSON.stringify({
 	telegramBotToken: "stub",
 	allowedChatIds: ["1"],

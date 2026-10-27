@@ -10,7 +10,7 @@ process.env.HOME = home;
 const { memoryTools } = await import("../src/memory.js");
 const { createPendingLink, consumeLink } = await import("../src/identity.js");
 import type { Config } from "../src/config.js";
-const sessions = join(home, ".pi-gateway", "sessions");
+const sessions = join(home, ".gaia", "sessions");
 const log = (role: string, text: string) =>
 	JSON.stringify({ type: "message", timestamp: "2026-09-11T12:00:00Z", message: { role, content: [{ type: "text", text }] } });
 mkdirSync(join(sessions, "111"), { recursive: true });

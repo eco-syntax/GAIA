@@ -57,7 +57,7 @@ export function createDiscordPlatform(token: string, allowedChannelIds: string[]
 			ws.onopen = () => {
 				ws.send(JSON.stringify({
 					op: 2,
-					d: { token, intents: INTENTS, properties: { os: "linux", browser: "pi-gateway", device: "pi-gateway" } },
+					d: { token, intents: INTENTS, properties: { os: "linux", browser: "gaia", device: "gaia" } },
 				}));
 			};
 			ws.onmessage = (ev) => {

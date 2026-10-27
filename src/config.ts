@@ -3,9 +3,9 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ChatRef } from "./platform.js";
 
-// PI_GATEWAY_STATE lets tests point the registry/state at a temp dir instead of
-// the live ~/.pi-gateway — never run a store test without it.
-const STATE_DIR = process.env.PI_GATEWAY_STATE ?? join(homedir(), ".pi-gateway");
+// GAIA_STATE lets tests point the registry/state at a temp dir instead of
+// the live ~/.gaia — never run a store test without it.
+const STATE_DIR = process.env.GAIA_STATE ?? join(homedir(), ".gaia");
 
 export interface Schedule {
 	name: string;
@@ -224,7 +224,7 @@ export const stateDir = STATE_DIR;
 export const researchDir = join(STATE_DIR, "research");
 
 /**
- * Create the state directory (~/.pi-gateway) with owner-only mode 0700.
+ * Create the state directory (~/.gaia) with owner-only mode 0700.
  * Everything inside — conversation logs, MEMORY.md, the FTS recall index,
  * research dumps — routinely contains secrets users paste to the agent (API
  * keys, credentials, personal data). mkdirSync's default is 0755, which would

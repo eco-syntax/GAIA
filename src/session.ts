@@ -25,7 +25,7 @@ import { writePlanTool, plansDir, PLAN_PROMPT, ACT_PROMPT, MODE_ENDED } from "./
  * pi's default set is [read, bash, edit, write]; read resolves absolute paths
  * and ~ with no sandbox, and edit/write write anywhere the OS user can (the
  * systemd unit even makes %h/GAIA writable). Leaving them enabled lets a
- * prompt-injected page exfiltrate ~/.pi-gateway/config.json / ~/.ssh/id_rsa
+ * prompt-injected page exfiltrate ~/.gaia/config.json / ~/.ssh/id_rsa
  * (read) or backdoor the repo (edit/write) without ever touching the gated
  * bash tool. Deny them all so every file access flows through the allowlist. */
 const CHAT_EXCLUDED_TOOLS = ["read", "edit", "write"] as const;

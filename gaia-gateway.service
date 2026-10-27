@@ -1,0 +1,26 @@
+[Unit]
+Description=gaia-gateway (GAIA Telegram gateway)
+After=network-online.target
+
+[Service]
+WorkingDirectory=%h/GAIA
+# @NODE_BIN@ is replaced with the node bin dir by install.sh
+Environment=PATH=@NODE_BIN@:@BIN_DIR@:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/GAIA/node_modules/.bin/tsx src/index.ts
+Restart=on-failure
+RestartSec=3
+
+# OS-level containment: even a successful prompt injection can't write
+# outside state/workspace, escalate, or touch system paths (docs/security-plan.md).
+# The filesystem sandbox is built by bwrap (src/sandbox.ts): --ro-bind / plus
+# --tmpfs /home,/tmp means nothing outside state/workspace is writable anyway.
+# systemd's own mount-namespace hardening (ProtectSystem/ProtectHome/PrivateTmp)
+# is deliberately NOT set: on Ubuntu's AppArmor user-namespace restriction,
+# bwrap nested inside systemd's mount sandbox loses its "bwrap" profile
+# transition and fails with "No permissions to create a new namespace".
+# Capability-level hardening that doesn't create mount namespaces is fine:
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+
+[Install]
+WantedBy=default.target

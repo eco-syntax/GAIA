@@ -5,8 +5,8 @@
 # - Idempotent: re-run to update both GreenPi and GAIA.
 # - OFFERS (does not install by default) a llama.cpp router + a default model for hosts with
 #   nothing else to point at; accepting is a prompt in step 6, skippable with GAIA_NO_LOCAL=1.
-# - Uninstall: systemctl --user disable --now pi-gateway llama-server
-#   rm ~/.config/systemd/user/{pi-gateway,llama-server}.service
+# - Uninstall: systemctl --user disable --now gaia-gateway llama-server
+#   rm ~/.config/systemd/user/{gaia-gateway,llama-server}.service
 #   rm -rf ~/.greenpi ~/GreenPi && rm ~/.local/bin/greenpi
 #   (revert GAIA: git checkout package.json package-lock.json && npm install)
 #
@@ -294,8 +294,8 @@ EOF
 	fi
 fi
 
-echo "==> 7/10 gateway config (~/.pi-gateway/config.json)"
-CONFIG=$HOME/.pi-gateway/config.json
+echo "==> 7/10 gateway config (~/.gaia/config.json)"
+CONFIG=$HOME/.gaia/config.json
 if [ -s "$CONFIG" ]; then
 	echo "config exists, keeping it"
 else
@@ -364,18 +364,18 @@ else
 				tmp=$(mktemp -d)
 				curl -fL "https://github.com/rhasspy/piper/releases/download/2023.11.14-2/$piper_tgz" -o "$tmp/p.tgz"
 				verify_sha256 "$tmp/p.tgz" "$(piper_sha "$piper_tgz")" "$piper_tgz"
-				mkdir -p "$tmp/x" "$HOME/.pi-gateway/piper"
+				mkdir -p "$tmp/x" "$HOME/.gaia/piper"
 				tar -xzf "$tmp/p.tgz" -C "$tmp/x"
-				cp -a "$tmp/x/piper/." "$HOME/.pi-gateway/piper/"
-				ln -sf "$HOME/.pi-gateway/piper/piper" "$BIN_DIR/piper"
+				cp -a "$tmp/x/piper/." "$HOME/.gaia/piper/"
+				ln -sf "$HOME/.gaia/piper/piper" "$BIN_DIR/piper"
 				rm -rf "$tmp"
-				echo "piper installed: $HOME/.pi-gateway/piper/piper (symlinked as $BIN_DIR/piper)"
+				echo "piper installed: $HOME/.gaia/piper/piper (symlinked as $BIN_DIR/piper)"
 			fi
 		fi
 
 		# piper voice model
-		mkdir -p "$HOME/.pi-gateway/voices"
-		if [ -s "$HOME/.pi-gateway/voices/en_US-lessac-medium.onnx" ]; then
+		mkdir -p "$HOME/.gaia/voices"
+		if [ -s "$HOME/.gaia/voices/en_US-lessac-medium.onnx" ]; then
 			echo "piper voice: already downloaded"
 		else
 			echo "downloading en_US-lessac-medium voice (~63 MB)"
@@ -385,11 +385,11 @@ else
 			verify_sha256 "$tmpv/en_US-lessac-medium.onnx" "$(voice_model_sha en_US-lessac-medium.onnx)" "en_US-lessac-medium.onnx"
 			curl -fL "$vbase/en_US-lessac-medium.onnx.json" -o "$tmpv/en_US-lessac-medium.onnx.json"
 			verify_sha256 "$tmpv/en_US-lessac-medium.onnx.json" "$(voice_model_sha en_US-lessac-medium.onnx.json)" "en_US-lessac-medium.onnx.json"
-			cp "$tmpv/en_US-lessac-medium.onnx" "$HOME/.pi-gateway/voices/en_US-lessac-medium.onnx"
-			cp "$tmpv/en_US-lessac-medium.onnx.json" "$HOME/.pi-gateway/voices/en_US-lessac-medium.onnx.json"
+			cp "$tmpv/en_US-lessac-medium.onnx" "$HOME/.gaia/voices/en_US-lessac-medium.onnx"
+			cp "$tmpv/en_US-lessac-medium.onnx.json" "$HOME/.gaia/voices/en_US-lessac-medium.onnx.json"
 			rm -rf "$tmpv"
 		fi
-		PIPER_VOICE=$HOME/.pi-gateway/voices/en_US-lessac-medium.onnx
+		PIPER_VOICE=$HOME/.gaia/voices/en_US-lessac-medium.onnx
 
 		# whisper.cpp binary (no macOS prebuilt on gh releases — brew install whisper-cpp)
 		if command -v whisper-cli >/dev/null || command -v whisper >/dev/null; then
@@ -406,21 +406,21 @@ else
 				tmp=$(mktemp -d)
 				curl -fL "https://github.com/ggml-org/whisper.cpp/releases/download/${WHISPER_VERSION}/$wb" -o "$tmp/w.tgz"
 				verify_sha256 "$tmp/w.tgz" "$(whisper_sha "$wb")" "$wb"
-				mkdir -p "$tmp/x" "$HOME/.pi-gateway/whisper"
+				mkdir -p "$tmp/x" "$HOME/.gaia/whisper"
 				tar -xzf "$tmp/w.tgz" -C "$tmp/x"
 				wbin=$(find "$tmp/x" -type f \( -name whisper-cli -o -name whisper -o -name main \) | head -1)
 				[ -n "$wbin" ] || { echo "whisper archive contained no binary" >&2; exit 1; }
 				# keep the whole extracted dir (side-by-side libs, RUNPATH $ORIGIN)
-				cp -a "$tmp/x/." "$HOME/.pi-gateway/whisper/"
-				chmod +x "$HOME/.pi-gateway/whisper/$(basename "$wbin")"
-				ln -sf "$HOME/.pi-gateway/whisper/$(basename "$wbin")" "$BIN_DIR/whisper-cli"
+				cp -a "$tmp/x/." "$HOME/.gaia/whisper/"
+				chmod +x "$HOME/.gaia/whisper/$(basename "$wbin")"
+				ln -sf "$HOME/.gaia/whisper/$(basename "$wbin")" "$BIN_DIR/whisper-cli"
 				rm -rf "$tmp"
 				echo "whisper installed: $wbin (symlinked as $BIN_DIR/whisper-cli)"
 			fi
 		fi
 
 		# whisper model (base.en — decent accuracy, runs on CPU in a few seconds)
-		if [ -s "$HOME/.pi-gateway/whisper/ggml-base.en.bin" ]; then
+		if [ -s "$HOME/.gaia/whisper/ggml-base.en.bin" ]; then
 			echo "whisper model: already downloaded"
 		else
 			echo "downloading ggml-base.en (~148 MB)"
@@ -428,10 +428,10 @@ else
 			curl -fL "https://huggingface.co/ggerganov/whisper.cpp/resolve/${WHISPER_MODEL_COMMIT}/ggml-base.en.bin" \
 				-o "$tmpw/ggml-base.en.bin"
 			verify_sha256 "$tmpw/ggml-base.en.bin" "$(whisper_model_sha ggml-base.en.bin)" "ggml-base.en.bin"
-			cp "$tmpw/ggml-base.en.bin" "$HOME/.pi-gateway/whisper/ggml-base.en.bin"
+			cp "$tmpw/ggml-base.en.bin" "$HOME/.gaia/whisper/ggml-base.en.bin"
 			rm -rf "$tmpw"
 		fi
-		WHISPER_MODEL=$HOME/.pi-gateway/whisper/ggml-base.en.bin
+		WHISPER_MODEL=$HOME/.gaia/whisper/ggml-base.en.bin
 
 		# merge into config.json — works whether step 7 wrote it fresh or kept an existing one
 		node - "$CONFIG" "$PIPER_VOICE" "$WHISPER_MODEL" <<'EOF'
@@ -452,10 +452,10 @@ fi
 echo "==> 9/10 install systemd user service (autostart + restart on crash)"
 need systemctl
 mkdir -p "$HOME/.config/systemd/user"
-sed "s|@NODE_BIN@|$(dirname "$(command -v node)")|" "$GAIA_DIR/pi-gateway.service" \
-	> "$HOME/.config/systemd/user/pi-gateway.service"
+sed "s|@NODE_BIN@|$(dirname "$(command -v node)")|; s|@BIN_DIR@|$BIN_DIR|" "$GAIA_DIR/gaia-gateway.service" \
+	> "$HOME/.config/systemd/user/gaia-gateway.service"
 systemctl --user daemon-reload
-systemctl --user enable --now pi-gateway.service
+systemctl --user enable --now gaia-gateway.service
 # start at boot without requiring a login session
 loginctl enable-linger "$USER" 2>/dev/null \
 	|| echo "note: enable-linger needs polkit/root — run 'sudo loginctl enable-linger $USER' once" >&2
@@ -476,8 +476,8 @@ if command -v pi >/dev/null; then
 	echo "existing pi untouched: $(pi --version) at $(command -v pi)"
 fi
 echo "GAIA now runs on the fork and as a service:"
-echo "  systemctl --user status pi-gateway     # state"
-echo "  journalctl --user -u pi-gateway -f     # logs"
+echo "  systemctl --user status gaia-gateway     # state"
+echo "  journalctl --user -u gaia-gateway -f     # logs"
 if [ -n "$LOCAL_MODEL" ]; then
 	echo "local model: llama.cpp router on http://127.0.0.1:8080 (curl http://127.0.0.1:8080/models for ids)"
 else

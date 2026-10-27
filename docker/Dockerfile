@@ -1,4 +1,4 @@
-# pi-gateway (GAIA) container image.
+# gaia-gateway (GAIA) container image.
 #
 # Build via docker/build.sh — it stages this directory with the GAIA source and
 # the GreenPi dependency tarballs (npm registries are never contacted for the
@@ -8,7 +8,7 @@
 # The agent sees the container filesystem plus exactly two mounts:
 #   /workspace            — the host's ./workspace folder (read-write): the file
 #                           passage to and from the agent
-#   /home/node/.pi-gateway— the host's ./data folder (read-write): memory,
+#   /home/node/.gaia— the host's ./data folder (read-write): memory,
 #                           session logs, schedules — what survives a reset
 # Secrets enter as environment variables (env_file: .env), never as files.
 #
@@ -71,8 +71,8 @@ ENV GAIA_SANDBOX=docker \
     GAIA_PIPER_VOICE=/opt/voice/en_US-lessac-medium.onnx \
     GAIA_WHISPER_MODEL=/opt/voice/ggml-base.en.bin \
     HOME=/home/node
-RUN mkdir -p /workspace /home/node/.pi-gateway && chown -R node:node /workspace /home/node /app
+RUN mkdir -p /workspace /home/node/.gaia && chown -R node:node /workspace /home/node /app
 USER node
-VOLUME /workspace /home/node/.pi-gateway
+VOLUME /workspace /home/node/.gaia
 
 CMD ["node_modules/.bin/tsx", "src/index.ts"]

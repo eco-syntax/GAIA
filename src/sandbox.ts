@@ -105,9 +105,13 @@ export function enterSandbox(
 	// Filesystem view: system read-only, /home and /tmp empty, then the two
 	// writable paths bound back in at their real paths. HOME is the workspace,
 	// so the read tool's ~ expansion can only ever reach shared files.
+	// PATH includes ~/.local/bin and it is bound read-only: install.sh symlinks
+	// the voice binaries (piper, whisper-cli) there, and /home is tmpfs'd away,
+	// so without the bind the symlinks would not exist inside the sandbox.
+	const localBin = join(homedir(), ".local/bin");
 	const env: Record<string, string> = {
 		HOME: workspace,
-		PATH: "/usr/local/bin:/usr/bin:/bin",
+		PATH: existsSync(localBin) ? `${localBin}:/usr/local/bin:/usr/bin:/bin` : "/usr/local/bin:/usr/bin:/bin",
 		GAIA_SANDBOX: "bwrap",
 		// pi's config dir (~/.greenpi) would land inside the workspace — point it
 		// at the state directory instead, where the agent's own machinery lives.
@@ -119,7 +123,7 @@ export function enterSandbox(
 	// Pin the resolved workspace + state dir across the re-exec: the child's HOME
 	// is the workspace, so any ~-derived default would nest inside it.
 	env.GAIA_WORKSPACE = workspace;
-	env.PI_GATEWAY_STATE = stateDir;
+	env.GAIA_STATE = stateDir;
 	// GAIA_* is the config-override surface (tokens, allow-lists, model spec):
 	// the gateway needs them, so they cross deliberately.
 	for (const [key, value] of Object.entries(process.env)) {
@@ -134,6 +138,9 @@ export function enterSandbox(
 		"--tmpfs", "/tmp",
 		"--ro-bind", repoRoot, repoRoot,
 		"--ro-bind", nodeBinDir, nodeBinDir,
+		// voice binaries (piper, whisper-cli) are symlinked here by install.sh;
+		// /home is tmpfs'd so the dir must be bound back or PATH lookups fail
+		...(existsSync(localBin) ? ["--ro-bind", localBin, localBin] : []),
 		"--bind", workspace, workspace,
 		"--bind", stateDir, stateDir,
 		"--",

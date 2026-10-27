@@ -399,7 +399,7 @@ if (platforms.telegram) {
 		{ command: "bash", description: "Approve or lock bash (/bash, /bash off, /bash force)" },
 	]);
 }
-console.log(`pi-gateway running (state: ${stateDir}), platforms: ${Object.keys(platforms).join(", ")}, ${listSchedules().length} schedules`);
+console.log(`gaia-gateway running (state: ${stateDir}), platforms: ${Object.keys(platforms).join(", ")}, ${listSchedules().length} schedules`);
 
 // Turns on one chat must not interleave (shared session history), so each chat
 // has a serial queue keyed by platform:chatId. Commands that must land

@@ -10,7 +10,7 @@ import { join } from "node:path";
 // Point the gateway state at a temp dir BEFORE importing src (stateDir is
 // computed from this env at import time).
 const stateHome = mkdtempSync(join(tmpdir(), "attach-check-"));
-process.env.PI_GATEWAY_STATE = join(stateHome, ".pi-gateway");
+process.env.GAIA_STATE = join(stateHome, ".gaia");
 
 const { saveAttachment, attachmentTool } = await import("../src/attachments.js");
 import type { ChatAttachment, ChatRef } from "../src/platform.js";

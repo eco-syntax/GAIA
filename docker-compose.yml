@@ -18,7 +18,7 @@ services:
       LLAMA_BASE_URL: ${LLAMA_BASE_URL:-http://llama:8080}
     volumes:
       - ./workspace:/workspace
-      - ./data:/home/node/.pi-gateway
+      - ./data:/home/node/.gaia
     restart: unless-stopped
 
   # Optional local model server: drop a .gguf into ./models and uncomment the

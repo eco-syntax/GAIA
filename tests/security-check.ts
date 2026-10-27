@@ -17,9 +17,9 @@ process.env.GAIA_TEST_BOT_TOKEN = "123456:AAHk_super_secret_bot_token_9876";
 // Two distinct identities (issue #120 needs them): chats "a" and "b" must map
 // to different memory files. identities.json is read lazily on first use, so
 // writing it here — before any project import — is enough.
-mkdirSync(join(fakeHome, ".pi-gateway"), { recursive: true });
+mkdirSync(join(fakeHome, ".gaia"), { recursive: true });
 writeFileSync(
-	join(fakeHome, ".pi-gateway", "identities.json"),
+	join(fakeHome, ".gaia", "identities.json"),
 	JSON.stringify({
 		identities: [
 			{ id: "identity-a", chats: [{ platform: "telegram", chatId: "a", userId: "u-a", linkedAt: "2026-01-01T00:00:00Z" }] },

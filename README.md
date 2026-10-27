@@ -91,7 +91,7 @@ The fastest way to run GAIA with local models.
 - `GAIA_MODEL`: Default model (e.g., `ollama/llama3`).
 - `LLAMA_BASE_URL`: URL for local providers like LM Studio.
 
-### Gateway Config (`~/.pi-gateway/config.json`)
+### Gateway Config (`~/.gaia/config.json`)
 Used for platform tokens (Slack, Discord, Matrix) and advanced model routing:
 - `planModel`: A smaller/faster model for `/plan` mode.
 - `actModel`: A stronger model for `/act` or `/delegate` modes.

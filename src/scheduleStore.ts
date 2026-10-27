@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { ensureStateDir, stateDir, type Schedule } from "./config.js";
 
 // ============================================================================
-// Live schedule registry. Schedules live in ~/.pi-gateway/schedules.json and
+// Live schedule registry. Schedules live in ~/.gaia/schedules.json and
 // are loaded into memory ONCE at boot. The scheduler re-consults that in-memory
 // array every tick, so add/remove via the schedule tool take effect without a
 // restart; editing schedules.json on disk does NOT (the file isn't re-read).

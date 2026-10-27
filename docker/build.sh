@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stage the docker build context and build the pi-gateway image.
+# Stage the docker build context and build the gaia-gateway image.
 #
 # The image must contain the GreenPi fork's packages, which exist only as local
 # tarballs (~/.greenpi/tarballs after install.sh, or built from ~/GreenPi).
@@ -10,13 +10,13 @@
 #      in-context greenpi/ folder
 #   4. runs docker build  (skipped with STAGE_ONLY=1 — CI does its own buildx)
 #
-# Usage: ./docker/build.sh [image-tag]              (default: pi-gateway:local)
+# Usage: ./docker/build.sh [image-tag]              (default: gaia:local)
 #        STAGE_ONLY=1 ./docker/build.sh             (context only, no build)
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 GAIA_DIR="$PWD"
-TAG="${1:-pi-gateway:local}"
+TAG="${1:-gaia:local}"
 TARBALL_SRC="${GREENPI_TARBALLS:-$HOME/.greenpi/tarballs}"
 GREENPI_SRC="${GREENPI_SRC:-$HOME/GreenPi}"
 
