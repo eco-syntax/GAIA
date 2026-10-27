@@ -65,7 +65,7 @@ The fastest way to run GAIA with local models.
 3. **Choose a Model Path**:
 
    **Option A: All-in-One (Bundled llama.cpp)** — *Best for a quick, self-contained setup*
-   - The image ships no LLM weights: the bundled server loads `./models/model.gguf` (`docker-compose.yml` passes it as `-m`). Grab the default model from Hugging Face — [`Colby/apertus-v1.5-8b-text-Q4_K_M-GGUF`](https://huggingface.co/Colby/apertus-v1.5-8b-text-Q4_K_M-GGUF) — or supply your own `.gguf` and set a matching `GAIA_MODEL`.
+   - The image ships no LLM weights: the bundled server loads `./models/model.gguf` (`docker-compose.yml` passes it as `-m`). Download any `.gguf` into `./models/` — e.g. the CPU-friendly [`unsloth/Qwen3.5-9B-GGUF` (`Qwen3.5-9B-Q4_K_M.gguf`, ~5.7 GB, no GPU needed)](https://huggingface.co/unsloth/Qwen3.5-9B-GGUF) — rename it to `model.gguf`, and set `GAIA_MODEL` to match.
    - Launch with: `docker compose --profile llama up -d`
 
    **Option B: Use your own (LM Studio/Ollama)** — *Best if you already have a model running or have a GPU*
@@ -112,7 +112,7 @@ git clone https://github.com/eco-syntax/GAIA.git ~/GAIA
 cd ~/GAIA
 ./install.sh
 ```
-*Note: `install.sh` installs a fork of `pi` ("GreenPi") to manage local dependencies and **automatically downloads the Apertus model**.*
+*Note: `install.sh` installs a fork of `pi` ("GreenPi") to manage local dependencies. It does **not** install a model server by default: if it detects LM Studio, Ollama, or llama.cpp already running, GAIA uses that. If the machine has nothing else, it *offers* to install a llama.cpp router plus the CPU-friendly [Qwen3.5-9B](https://huggingface.co/unsloth/Qwen3.5-9B-GGUF) model (~5.7 GB, runs without a GPU) — accepting is one keystroke, declining leaves the model unset so you can pick any provider later with `/model`. Set `GAIA_NO_LOCAL=1` to skip the offer entirely (non-interactive installs).*
 
 ### macOS
 Use the **Docker installation** described above. The `install.sh` script requires `systemd`, which is not native to macOS.

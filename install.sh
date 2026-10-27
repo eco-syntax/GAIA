@@ -3,7 +3,8 @@
 #
 # - Never touches an existing `pi` install (isolated dir under ~/.greenpi, separate ~/.greenpi config).
 # - Idempotent: re-run to update both GreenPi and GAIA.
-# - Installs & runs a llama.cpp router (systemd user service) with the apertus default model.
+# - OFFERS (does not install by default) a llama.cpp router + a default model for hosts with
+#   nothing else to point at; accepting is a prompt in step 6, skippable with GAIA_NO_LOCAL=1.
 # - Uninstall: systemctl --user disable --now pi-gateway llama-server
 #   rm ~/.config/systemd/user/{pi-gateway,llama-server}.service
 #   rm -rf ~/.greenpi ~/GreenPi && rm ~/.local/bin/greenpi
@@ -172,48 +173,78 @@ fs.writeFileSync(p, JSON.stringify(pkg, null, "\t") + "\n");
 EOF
 	(cd "$GAIA_DIR" && npm install --no-fund --no-audit)
 
-echo "==> 6/10 llama.cpp router (pinned build, systemd user service)"
+echo "==> 6/10 local model server (optional — offer, not default)"
 need curl
-LLAMA_DIR=$HOME/.greenpi/agent/llama
-LLAMA_BIN=$LLAMA_DIR/bin/llama-server
-if [ -x "$LLAMA_BIN" ]; then
-	echo "llama-server already installed: $LLAMA_BIN"
-else
-	case "$(uname -s)/$(uname -m)" in
-		Linux/x86_64) plat=linux; arch=x64 ;;
-		Linux/aarch64|Linux/arm64) plat=linux; arch=arm64 ;;
-		Darwin/arm64) plat=darwin; arch=arm64 ;;
-		Darwin/x86_64) plat=darwin; arch=x64 ;;
-		*) echo "no prebuilt llama-server for $(uname -s)/$(uname -m) — install one in PATH" >&2; exit 1 ;;
-	esac
-	# vulkan build offloads GPU on any vendor; cpu build is the fallback
-	if [ "$plat" = linux ] && { command -v vulkaninfo >/dev/null || [ -d /usr/share/vulkan/icd.d ]; }; then
-		variant="vulkan-$arch"
-	else
-		variant="$arch"
+# GAIA works with any OpenAI-compatible server you already run (LM Studio, Ollama,
+# llama.cpp, vLLM) or a cloud provider. Installing a local llama.cpp router plus a
+# ~6 GB model is offered here only so a machine with nothing else has a working
+# default — say no if you have your own model endpoint and set it in step 7's config.
+LOCAL_MODEL=""
+if [ -n "${GAIA_NO_LOCAL:-}" ]; then
+	echo "GAIA_NO_LOCAL set — skipping llama.cpp router and model download"
+elif [ -x "$HOME/.greenpi/agent/llama/bin/llama-server" ]; then
+	# Already installed on a previous run: keep it, but only keep the gateway pointed
+	# at it if the router is actually healthy.
+	LLAMA_DIR=$HOME/.greenpi/agent/llama
+	LLAMA_BIN=$LLAMA_DIR/bin/llama-server
+	echo "llama.cpp router already installed: $LLAMA_BIN"
+	if curl -s -o /dev/null -w '' --max-time 2 http://127.0.0.1:8080/health 2>/dev/null; then
+		LOCAL_MODEL=$(curl -s http://127.0.0.1:8080/models | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+		[ -n "$LOCAL_MODEL" ] && echo "router is up; loaded models: $LOCAL_MODEL"
 	fi
-	# gh release assets: ubuntu-* on linux, macos-* on darwin
-	asset="llama-${LLAMA_VERSION}-bin-${plat/linux/ubuntu}-${variant}.tar.gz"
-	url="https://github.com/ggml-org/llama.cpp/releases/download/${LLAMA_VERSION}/${asset}"
-	echo "downloading $url"
-	tmp=$(mktemp -d)
-	curl -fL "$url" -o "$tmp/a.tgz"
-	verify_sha256 "$tmp/a.tgz" "$(llama_sha "$asset")" "$asset"
-	mkdir -p "$tmp/x" "$LLAMA_DIR/bin"
-	tar -xzf "$tmp/a.tgz" -C "$tmp/x"
-	# ship the whole dir: llama-server needs its side-by-side libs (RUNPATH $ORIGIN);
-	# cp -a keeps the .so symlinks (libggml-base.so.0 -> ...) that find -type f drops.
-	# newer release tarballs nest everything in a top-level dir — install from beside the binary
-	bindir=$(dirname "$(find "$tmp/x" -name llama-server -type f | head -1)")
-	cp -a "$bindir/." "$LLAMA_DIR/bin/"
-	chmod -R 755 "$LLAMA_DIR/bin"
-	rm -rf "$tmp"
-fi
+else
+	# Detect an existing OpenAI-compatible server before offering anything: LM Studio
+	# (1234), Ollama (11434), llama.cpp (8080). If one answers, GAIA can use it as-is.
+	EXISTING=""
+	for probe in "http://127.0.0.1:1234/v1" "http://127.0.0.1:11434/v1" "http://127.0.0.1:8080/v1"; do
+		code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "$probe/models" 2>/dev/null || true)
+		[ "$code" = "200" ] && { EXISTING="$probe"; break; }
+	done
+	if [ -n "$EXISTING" ]; then
+		echo "found an existing model server at $EXISTING — GAIA will use it; no llama.cpp install needed"
+		echo "  (point the config at one of its models in step 7, e.g. via /model)"
+	else
+		printf "Install a local llama.cpp router + Qwen3.5-9B model (~5.7 GB, runs on CPU, no GPU needed)? [y/N] "
+		if [ -t 0 ]; then read -r -n 1 yn; echo; else yn="n"; fi
+		case "$yn" in
+		[yY])
+			LLAMA_VERSION=b10823 # pinned llama.cpp release; bump to update the bundled server
+			LLAMA_DIR=$HOME/.greenpi/agent/llama
+			LLAMA_BIN=$LLAMA_DIR/bin/llama-server
+			case "$(uname -s)/$(uname -m)" in
+				Linux/x86_64) plat=linux; arch=x64 ;;
+				Linux/aarch64|Linux/arm64) plat=linux; arch=arm64 ;;
+				Darwin/arm64) plat=darwin; arch=arm64 ;;
+				Darwin/x86_64) plat=darwin; arch=x64 ;;
+				*) echo "no prebuilt llama-server for $(uname -s)/$(uname -m) — install one in PATH" >&2; exit 1 ;;
+			esac
+			# vulkan build offloads GPU on any vendor; cpu build is the fallback
+			if [ "$plat" = linux ] && { command -v vulkaninfo >/dev/null || [ -d /usr/share/vulkan/icd.d ]; }; then
+				variant="vulkan-$arch"
+			else
+				variant="$arch"
+			fi
+			# gh release assets: ubuntu-* on linux, macos-* on darwin
+			asset="llama-${LLAMA_VERSION}-bin-${plat/linux/ubuntu}-${variant}.tar.gz"
+			url="https://github.com/ggml-org/llama.cpp/releases/download/${LLAMA_VERSION}/${asset}"
+			echo "downloading $url"
+			tmp=$(mktemp -d)
+			curl -fL "$url" -o "$tmp/a.tgz"
+			verify_sha256 "$tmp/a.tgz" "$(llama_sha "$asset")" "$asset"
+			mkdir -p "$tmp/x" "$LLAMA_DIR/bin"
+			tar -xzf "$tmp/a.tgz" -C "$tmp/x"
+			# ship the whole dir: llama-server needs its side-by-side libs (RUNPATH $ORIGIN);
+			# cp -a keeps the .so symlinks (libggml-base.so.0 -> ...) that find -type f drops.
+			# newer release tarballs nest everything in a top-level dir — install from beside the binary
+			bindir=$(dirname "$(find "$tmp/x" -name llama-server -type f | head -1)")
+			cp -a "$bindir/." "$LLAMA_DIR/bin/"
+			chmod -R 755 "$LLAMA_DIR/bin"
+			rm -rf "$tmp"
 
-mkdir -p "$LLAMA_DIR/models" "$HOME/.config/systemd/user"
-cat > "$HOME/.config/systemd/user/llama-server.service" <<EOF
+			mkdir -p "$LLAMA_DIR/models" "$HOME/.config/systemd/user"
+			cat > "$HOME/.config/systemd/user/llama-server.service" <<EOF
 [Unit]
-Description=llama.cpp router (GreenPi models)
+Description=llama.cpp router (GAIA models)
 After=network-online.target
 
 [Service]
@@ -224,36 +255,44 @@ RestartSec=3
 [Install]
 WantedBy=default.target
 EOF
-systemctl --user daemon-reload
-systemctl --user enable --now llama-server.service
-# /health: 200 ready, 503 still booting — both mean the router is up
-for i in $(seq 1 60); do
-	code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/health || true)
-	[ "$code" = 200 -o "$code" = 503 ] && break
-	[ "$i" = 60 ] && { echo "llama-server did not become healthy — journalctl --user -u llama-server" >&2; exit 1; }
-	sleep 1
-done
+			systemctl --user daemon-reload
+			systemctl --user enable --now llama-server.service
+			# /health: 200 ready, 503 still booting — both mean the router is up
+			for i in $(seq 1 60); do
+				code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/health || true)
+				[ "$code" = 200 ] || [ "$code" = 503 ] && break
+				[ "$i" = 60 ] && { echo "llama-server did not become healthy — journalctl --user -u llama-server" >&2; exit 1; }
+				sleep 1
+			done
 
-MODEL_REPO=Colby/apertus-v1.5-8b-text-Q4_K_M-GGUF
-if curl -s http://127.0.0.1:8080/models | grep -q apertus-v1.5-8b-text; then
-	echo "apertus model already present on the router"
-else
-	echo "downloading $MODEL_REPO (one-time, a few GB — router shows progress in its log)"
-	curl -sf -X POST http://127.0.0.1:8080/models -d "{\"model\":\"$MODEL_REPO\"}"
-	for i in $(seq 1 1800); do
-		curl -s http://127.0.0.1:8080/models | grep -q apertus-v1.5-8b-text && break
-		[ "$i" = 1800 ] && { echo "model download timed out" >&2; exit 1; }
-		sleep 2
-	done
+			# CPU-friendly default model (Q4_K_M ≈ 5.7 GB); runs without a GPU.
+			MODEL_REPO=unsloth/Qwen3.5-9B-GGUF:Q4_K_M
+			if curl -s http://127.0.0.1:8080/models | grep -q "Qwen3.5-9B"; then
+				echo "Qwen3.5-9B already present on the router"
+			else
+				echo "downloading $MODEL_REPO (one-time, ~6 GB — router shows progress in its log)"
+				curl -sf -X POST http://127.0.0.1:8080/models -d "{\"model\":\"$MODEL_REPO\"}"
+				for i in $(seq 1 3600); do
+					curl -s http://127.0.0.1:8080/models | grep -q "Qwen3.5-9B" && break
+					[ "$i" = 3600 ] && { echo "model download timed out" >&2; exit 1; }
+					sleep 2
+				done
+			fi
+			LOCAL_MODEL=$(curl -s http://127.0.0.1:8080/models | grep -o '"id":"[^"]*Qwen3.5-9B[^"]*"' | head -1 | cut -d'"' -f4)
+			# router returns 400 "model is already running" on re-runs — don't let set -e kill the script silently
+			curl -sf -X POST http://127.0.0.1:8080/models/load -d "{\"model\":\"$LOCAL_MODEL\"}" || true
+			for i in $(seq 1 300); do
+				curl -s http://127.0.0.1:8080/models | grep -q '"loaded"' && { echo "model loaded: $LOCAL_MODEL"; break; }
+				[ "$i" = 300 ] && { echo "model load timed out" >&2; exit 1; }
+				sleep 1
+			done
+			;;
+		*)
+			echo "skipped — point GAIA at your own model server in the config (step 7) or with /model"
+			;;
+		esac
+	fi
 fi
-MODEL_ID=$(curl -s http://127.0.0.1:8080/models | grep -o '"id":"[^"]*apertus[^"]*"' | head -1 | cut -d'"' -f4)
-# router returns 400 "model is already running" on re-runs — don't let set -e kill the script silently
-curl -sf -X POST http://127.0.0.1:8080/models/load -d "{\"model\":\"$MODEL_ID\"}" || true
-for i in $(seq 1 300); do
-	curl -s http://127.0.0.1:8080/models | grep -q '"loaded"' && { echo "model loaded: $MODEL_ID"; break; }
-	[ "$i" = 300 ] && { echo "model load timed out" >&2; exit 1; }
-	sleep 1
-done
 
 echo "==> 7/10 gateway config (~/.pi-gateway/config.json)"
 CONFIG=$HOME/.pi-gateway/config.json
@@ -269,22 +308,33 @@ else
 	done
 	# best-effort: peek at recent messages to suggest the user's chat id
 	DETECTED=$(curl -sf "https://api.telegram.org/bot$TOKEN/getUpdates" | grep -o '"chat":{"id":[0-9]*' | grep -o '[0-9]*' | sort -u | head -5 || true)
-	[ -n "$DETECTED" ] && echo "chats seen by this bot: $(echo $DETECTED | tr '\n' ' ') (message the bot first if empty)"
+	[ -n "$DETECTED" ] && echo "chats seen by this bot: $(echo "$DETECTED" | tr '\n' ' ') (message the bot first if empty)"
 	while true; do
 		read -r -p "Your chat id to allow: " CHAT_ID
 		case "$CHAT_ID" in ''|*[!0-9]*) echo "need a numeric chat id" >&2; continue;; esac
 		break
 	done
-	# provider id 'llama-cpp' = GreenPi's llama.cpp router; model = the apertus default just loaded
+	# Model: the freshly-installed llama.cpp router when the user accepted step 6's
+	# offer; otherwise leave the model unset — GAIA starts fine without one and the
+	# user picks a model interactively via /model (or edits config.json / GAIA_MODEL).
+	# provider id 'llama-cpp' = GreenPi's llama.cpp router.
+	MODEL_LINE=""
+	if [ -n "$LOCAL_MODEL" ]; then
+		MODEL_LINE=",
+  \"model\": { \"provider\": \"llama-cpp\", \"id\": \"$LOCAL_MODEL\" }"
+	fi
 	cat > "$CONFIG" <<EOF
 {
   "telegramBotToken": "$TOKEN",
-  "allowedChatIds": [$CHAT_ID],
-  "model": { "provider": "llama-cpp", "id": "${MODEL_ID:-$MODEL_REPO}" }
+  "allowedChatIds": [$CHAT_ID]$MODEL_LINE
 }
 EOF
 	chmod 600 "$CONFIG"
-	echo "wrote $CONFIG (model ids on the router: curl http://127.0.0.1:8080/models)"
+	if [ -n "$LOCAL_MODEL" ]; then
+		echo "wrote $CONFIG (model ids on the router: curl http://127.0.0.1:8080/models)"
+	else
+		echo "wrote $CONFIG (no default model — run /model in chat, or set GAIA_MODEL=provider/id)"
+	fi
 fi
 
 echo "==> 8/10 local voice (optional: piper TTS for replies, whisper STT for voice notes)"
@@ -428,5 +478,11 @@ fi
 echo "GAIA now runs on the fork and as a service:"
 echo "  systemctl --user status pi-gateway     # state"
 echo "  journalctl --user -u pi-gateway -f     # logs"
+if [ -n "$LOCAL_MODEL" ]; then
+	echo "local model: llama.cpp router on http://127.0.0.1:8080 (curl http://127.0.0.1:8080/models for ids)"
+else
+	echo "no local model server installed — pick a model in chat with /model (any OpenAI-compatible"
+	echo "endpoint or cloud provider works; see README \"Model Setup\")"
+fi
 echo "config lives in ~/.greenpi (fresh — add models.json/providers there as needed)"
 echo "sandbox: the agent sees only its workspace (~/gaia-workspace, set \"workspace\" in the config) and its state dir — see docs/security-plan.md"
