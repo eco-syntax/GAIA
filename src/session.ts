@@ -1,4 +1,5 @@
 import {
+	builtInExtensions,
 	createAgentSession,
 	createReadToolDefinition,
 	DefaultResourceLoader,
@@ -13,6 +14,7 @@ import { join, basename } from "node:path";
 import { readFileSync } from "node:fs";
 import { setModel, stateDir, type Config, type ModelSpec } from "./config.js";
 import { chatKey, type ChatRef } from "./platform.js";
+import { sleep } from "./net.js";
 import { stripReasoning } from "./format.js";
 import { webTools } from "./web.js";
 import { loadMemory, memoryTools, memoryFileForChat } from "./memory.js";
@@ -106,6 +108,37 @@ async function resolveModel(config: Config, modelRuntime?: ModelRuntime, spec?: 
 	return { modelRuntime: runtime, model, warning };
 }
 
+/** After a session is created, extension providers (llama.cpp) have registered
+ * into the shared runtime — registration happens inside createAgentSession, so
+ * an earlier resolveModel may have missed them and handed the session a
+ * fallback. If the configured model resolves now, refresh the catalog once
+ * (registration only primes an offline refresh; first-time setups have no
+ * cached catalog) and switch the session to the configured model. `setModel`
+ * receives the resolved model; clear any stale fallback warning on success. */
+async function adoptConfiguredModel(
+	config: Config,
+	runtime: ModelRuntime,
+	resolved: Model<any> | undefined,
+	setModel: (model: Model<any>) => Promise<void>,
+): Promise<void> {
+	const spec = config.model;
+	// `resolved` may be undefined when even the fallback list was empty (extension
+	// provider not yet in the catalog) — that is exactly the case to adopt.
+	if (!spec) return;
+	if (resolved && resolved.id === spec.id && resolved.provider === spec.provider) return;
+	let configured = runtime.getModel(spec.provider, spec.id);
+	// Registration primed an offline refresh that races ours; a full network
+	// refresh fills the catalog, but the first one can be superseded mid-flight
+	// — retry a few times before giving up (a provider-subset refresh skips
+	// extension providers, so this must be a full refresh).
+	for (let attempt = 0; !configured && attempt < 3; attempt++) {
+		await sleep(600);
+		await runtime.refresh({ allowNetwork: true }).catch(() => {});
+		configured = runtime.getModel(spec.provider, spec.id);
+	}
+	if (configured) await setModel(configured);
+}
+
 /** Wrap pi's built-in read so any file read taints the session: a repo cloned
  * from an attacker can carry the same "save this to memory" instructions as a
  * fetched page, and the model reads it without any web tool having run. The
@@ -154,6 +187,10 @@ export class ChatSessions {
 		const loader = new DefaultResourceLoader({
 			cwd: process.cwd(),
 			agentDir: join(stateDir, "agent"),
+			// GreenPi's built-in llama.cpp extension (provider "llama.cpp"): without
+			// it the interactive CLI registers it but SDK sessions never would, and
+			// GAIA_MODEL=llama.cpp/<id> (the bundled-model Docker flow) can't resolve.
+			extensionFactories: builtInExtensions,
 			systemPromptOverride: () => CHAT_SYSTEM_PROMPT,
 			appendSystemPromptOverride: () => [],
 		});
@@ -193,6 +230,13 @@ export class ChatSessions {
 			excludeTools: [...CHAT_EXCLUDED_TOOLS],
 			resourceLoader: loader,
 			sessionManager: SessionManager.create(process.cwd(), join(stateDir, "sessions", key)),
+		});
+		// Extension providers (llama.cpp) register into the shared runtime during
+		// createAgentSession — after resolveModel already ran. If the configured
+		// model resolves NOW but the session got a fallback earlier, swap it.
+		await adoptConfiguredModel(this.config, runtime, model, async (m) => {
+			await session.setModel(m);
+			this.warnings.delete(key);
 		});
 		// Memory is appended to the log as custom messages, never prepended to the
 		// system prompt — updates mid-chat reach the next turn without a restart.
@@ -472,6 +516,14 @@ export async function runOneShot(
 		// rather than just opening it.
 		bashGate.trust(delegateChatId);
 	}
+	// Extension providers (llama.cpp) register only through a resource loader;
+	// without one GAIA_MODEL=llama.cpp/<id> can't resolve in headless runs.
+	const loader = new DefaultResourceLoader({
+		cwd: process.cwd(),
+		agentDir: join(stateDir, "agent"),
+		extensionFactories: builtInExtensions,
+	});
+	await loader.reload();
 	const { session } = await createAgentSession({
 		modelRuntime,
 		model,
@@ -489,14 +541,23 @@ export async function runOneShot(
 			...(["edit", "write"].some((t) => options?.tools?.includes(t)) ? [] : ["edit", "write"]),
 		],
 		customTools: [...(options?.customTools ?? []), bashGateTool(delegateChatId ?? options?.chatId ?? NO_CHAT)],
+		resourceLoader: loader,
 		sessionManager: SessionManager.inMemory(),
+	});
+	// Extension providers registered during createAgentSession — adopt the
+	// configured model if the pre-session resolve missed it.
+	let adopted = false;
+	await adoptConfiguredModel(config, modelRuntime, model, async (m) => {
+		await session.setModel(m);
+		adopted = true;
 	});
 	options?.onSession?.(session);
 	try {
 		await session.prompt(systemPrompt ? `${systemPrompt}\n\n${prompt}` : prompt);
 		const outcome = turnOutcome(session, 0);
 		const text = outcome.error ? `Error: ${outcome.error}` : (outcome.text ?? "(no response)");
-		return warning ? `${warning}\n\n${text}` : text;
+		// The warning described the pre-adoption fallback; adoption fixed that.
+		return warning && !adopted ? `${warning}\n\n${text}` : text;
 	} finally {
 		session.dispose();
 		if (delegateChatId) bashGate.reset(delegateChatId);

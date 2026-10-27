@@ -21,12 +21,14 @@ services:
       - ./data:/home/node/.gaia
     restart: unless-stopped
 
-  # Optional local model server: drop a .gguf into ./models and uncomment the
-  # model spec in .env. Start with: docker compose --profile llama up -d
+  # Optional local model server: drop a .gguf into ./models and set
+  # GAIA_MODEL=llama.cpp/<filename> in .env. Start with: docker compose --profile llama up -d
   llama:
     image: ghcr.io/ggml-org/llama.cpp:server
     profiles: ["llama"]
     volumes:
       - ./models:/models:ro
-    command: ["-m", "/models/model.gguf", "--host", "0.0.0.0", "--port", "8080", "-c", "32768"]
+    # Router mode (--models-dir): GAIA discovers models via GET /models and
+    # loads them on first use (autoload is on by default).
+    command: ["--models-dir", "/models", "--host", "0.0.0.0", "--port", "8080", "-c", "32768"]
     restart: unless-stopped

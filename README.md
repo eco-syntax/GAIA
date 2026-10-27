@@ -55,31 +55,93 @@ GAIA treats every tool response (web, shell, files) as untrusted.
 
 ## ⚡ Quick Start (Docker)
 
-The fastest way to run GAIA with local models.
+The fastest way to run GAIA on Windows, Mac, or Linux. Everything runs in two containers: the GAIA gateway, and (optionally) a llama.cpp model server.
 
-1. **Prepare**: Download and extract the [release ZIP](https://github.com/eco-syntax/GAIA/releases) (or clone the repo) into a new folder.
-2. **Configure Environment**:
-   - Copy `.env.example` to `.env`.
-   - Get a Telegram bot token from [@BotFather](https://t.me/BotFather) and set `GAIA_TELEGRAM_BOT_TOKEN=...` in `.env`.
-   - Find your Chat ID via `curl "https://api.telegram.org/bot<TOKEN>/getUpdates"` and set `GAIA_ALLOWED_CHAT_IDS=...` in `.env`.
-3. **Choose a Model Path**:
+### 1. Install Docker Desktop
 
-   **Option A: All-in-One (Bundled llama.cpp)** — *Best for a quick, self-contained setup*
-   - The image ships no LLM weights: the bundled server loads `./models/model.gguf` (`docker-compose.yml` passes it as `-m`). Download any `.gguf` into `./models/` — e.g. the CPU-friendly [`unsloth/Qwen3.5-9B-GGUF` (`Qwen3.5-9B-Q4_K_M.gguf`, ~5.7 GB, no GPU needed)](https://huggingface.co/unsloth/Qwen3.5-9B-GGUF) — rename it to `model.gguf`, and set `GAIA_MODEL` to match.
-   - Launch with: `docker compose --profile llama up -d`
+Download and install [Docker Desktop](https://docs.docker.com/get-docker/) (Windows or Mac) or [Docker Engine](https://docs.docker.com/engine/install/) (Linux). Start it and make sure it's running — on Windows/Mac it lives in the system tray/menu bar, and the whale icon should be steady (not animating).
 
-   **Option B: Use your own (LM Studio/Ollama)** — *Best if you already have a model running or have a GPU*
-   - Set `GAIA_MODEL=lmstudio/<id>` (or your provider) in `.env`.
-   - Set `LLAMA_BASE_URL=http://host.docker.internal:1234` (for LM Studio) in `.env`.
-   - Launch with: `docker compose up -d`
+Open a terminal:
+- **Windows**: PowerShell (Start → type "PowerShell")
+- **Mac**: Terminal (Applications → Utilities)
+- **Linux**: your usual shell
 
-4. **Launch**:
-   ```bash
-   docker compose pull
+Check Docker works:
+```bash
+docker --version
+```
+
+### 2. Get GAIA and configure it
+
+Download and extract the [release ZIP](https://github.com/eco-syntax/GAIA/releases) (or `git clone https://github.com/eco-syntax/GAIA.git`), then open a terminal in that folder.
+
+Create your config file by copying the example:
+
+```powershell
+# Windows (PowerShell)
+copy .env.example .env
+notepad .env
+```
+```bash
+# Mac / Linux
+cp .env.example .env
+nano .env   # or any editor
+```
+
+In `.env`:
+- Set `GAIA_TELEGRAM_BOT_TOKEN` to the token [@BotFather](https://t.me/BotFather) gave you when you created your bot.
+- Set `GAIA_ALLOWED_CHAT_IDS` to your numeric chat id. To find it: message your bot once (any text), then open `https://api.telegram.org/bot<YOUR-TOKEN>/getUpdates` in a browser and look for `"chat":{"id":123456789}` in the response.
+
+### 3. Choose a model path — pick ONE
+
+**Option A: All-in-one (bundled llama.cpp)** — for a self-contained setup with no other AI tools installed.
+
+1. Create a `models` folder next to `docker-compose.yml`.
+2. Download a `.gguf` model into it — e.g. the CPU-friendly [Qwen3.5-9B Q4_K_M](https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/blob/main/Qwen3.5-9B-Q4_K_M.gguf) (~5.7 GB, runs on any modern PC, no GPU needed). Keep the filename as-is (e.g. `Qwen3.5-9B-Q4_K_M.gguf`).
+3. In `.env`, set the model to the filename **without** the `.gguf` extension:
    ```
-   *(Then follow the specific launch command for your chosen option above.)*
+   GAIA_MODEL=llama.cpp/Qwen3.5-9B-Q4_K_M
+   ```
 
-5. **Verify**: Message your bot and run `/status`.
+**Option B: Use a model server you already run (LM Studio, Ollama, …)**
+
+1. In `.env`, set the model to that server's provider and a model id it serves, e.g.:
+   ```
+   GAIA_MODEL=lmstudio/qwen3.5-9b
+   ```
+2. Point GAIA at it (`LLAMA_BASE_URL` is only read if set — the default inside compose assumes the bundled Option A service):
+   ```
+   LLAMA_BASE_URL=http://host.docker.internal:1234
+   ```
+   (`host.docker.internal` is how containers reach a server on your own machine; `1234` is LM Studio's default port, Ollama's is `11434`.)
+
+### 4. Start
+
+```bash
+docker compose pull        # download the GAIA image (first run only)
+```
+
+Then, depending on your choice above:
+
+```bash
+# Option A (includes the model server):
+docker compose --profile llama up -d
+
+# Option B (gateway only):
+docker compose up -d
+```
+
+Watch it come up (Ctrl+C to stop watching — the containers keep running):
+
+```bash
+docker compose logs -f gateway
+```
+
+### 5. Verify
+
+Message your bot on Telegram and send `/status`. It should reply with its sandbox, model, and bash-gate state. Model not right? Switch any time in chat with `/model`.
+
+To stop everything: `docker compose down` (add `--profile llama` if you used Option A).
 
 ---
 
