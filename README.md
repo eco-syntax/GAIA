@@ -109,7 +109,7 @@ In `.env`:
    ```
    GAIA_MODEL=lmstudio/qwen3.5-9b
    ```
-2. Point GAIA at it (`LLAMA_BASE_URL` is only read if set — the default inside compose assumes the bundled Option A service):
+2. Point GAIA at it — set this in `.env` to override the compose default (which assumes the bundled Option A service):
    ```
    LLAMA_BASE_URL=http://host.docker.internal:1234
    ```
@@ -151,7 +151,7 @@ To stop everything: `docker compose down` (add `--profile llama` if you used Opt
 - `GAIA_TELEGRAM_BOT_TOKEN`: Your Telegram bot token.
 - `GAIA_ALLOWED_CHAT_IDS`: Comma-separated allowed chat IDs.
 - `GAIA_MODEL`: Default model (e.g., `ollama/llama3`).
-- `LLAMA_BASE_URL`: URL for local providers like LM Studio.
+- `LLAMA_BASE_URL`: Model server URL — only needed for the bundled llama.cpp service or an OpenAI-compatible endpoint on another host (LM Studio, Ollama, …).
 
 ### Gateway Config (`~/.gaia/config.json`)
 Used for platform tokens (Slack, Discord, Matrix) and advanced model routing:

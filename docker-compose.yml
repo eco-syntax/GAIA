@@ -12,10 +12,11 @@ services:
     #   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
     image: ghcr.io/eco-syntax/gaia:latest
     env_file: .env
+    # Model server: ONLY needed when using the bundled llama service below.
+    # With Option B (your own LM Studio/Ollama), set LLAMA_BASE_URL in .env —
+    # it passes through to the container and overrides this default.
     environment:
-      # The gateway's model server: the llama service below (default), or your
-      # own OpenAI-compatible endpoint — override LLAMA_BASE_URL in .env.
-      LLAMA_BASE_URL: ${LLAMA_BASE_URL:-http://llama:8080}
+      - LLAMA_BASE_URL=${LLAMA_BASE_URL:-http://llama:8080}
     volumes:
       - ./workspace:/workspace
       - ./data:/home/node/.gaia
