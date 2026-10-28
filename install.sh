@@ -300,20 +300,56 @@ if [ -s "$CONFIG" ]; then
 	echo "config exists, keeping it"
 else
 	mkdir -p "$(dirname "$CONFIG")"
-	while true; do
-		read -r -p "Telegram bot token (from @BotFather): " TOKEN
-		[ -n "$TOKEN" ] || continue
-		if curl -sf "https://api.telegram.org/bot$TOKEN/getMe" | grep -q '"ok":true'; then break; fi
-		echo "token invalid or Telegram unreachable — retry" >&2
-	done
-	# best-effort: peek at recent messages to suggest the user's chat id
-	DETECTED=$(curl -sf "https://api.telegram.org/bot$TOKEN/getUpdates" | grep -o '"chat":{"id":[0-9]*' | grep -o '[0-9]*' | sort -u | head -5 || true)
-	[ -n "$DETECTED" ] && echo "chats seen by this bot: $(echo "$DETECTED" | tr '\n' ' ') (message the bot first if empty)"
-	while true; do
-		read -r -p "Your chat id to allow: " CHAT_ID
-		case "$CHAT_ID" in ''|*[!0-9]*) echo "need a numeric chat id" >&2; continue;; esac
-		break
-	done
+	# Platform choice: Matrix by default (self-hostable, no third-party bot
+	# approval), Telegram as the alternative. config.json uses camelCase keys.
+	printf "Chat platform — Matrix (default) or Telegram? [M/t] "
+	if [ -t 0 ]; then read -r -n 1 platform; echo; else platform="m"; fi
+	PLATFORM_LINE=""
+	case "$platform" in
+	[tT]*)
+		while true; do
+			read -r -p "Telegram bot token (from @BotFather): " TOKEN
+			[ -n "$TOKEN" ] || continue
+			if curl -sf "https://api.telegram.org/bot$TOKEN/getMe" | grep -q '"ok":true'; then break; fi
+			echo "token invalid or Telegram unreachable — retry" >&2
+		done
+		# best-effort: peek at recent messages to suggest the user's chat id
+		DETECTED=$(curl -sf "https://api.telegram.org/bot$TOKEN/getUpdates" | grep -o '"chat":{"id":[0-9]*' | grep -o '[0-9]*' | sort -u | head -5 || true)
+		[ -n "$DETECTED" ] && echo "chats seen by this bot: $(echo "$DETECTED" | tr '\n' ' ') (message the bot first if empty)"
+		while true; do
+			read -r -p "Your chat id to allow: " CHAT_ID
+			case "$CHAT_ID" in ''|*[!0-9]*) echo "need a numeric chat id" >&2; continue;; esac
+			break
+		done
+		PLATFORM_LINE="
+  \"telegramBotToken\": \"$TOKEN\",
+  \"allowedChatIds\": [$CHAT_ID]"
+		;;
+	*)
+		while true; do
+			read -r -p "Homeserver URL (Enter for https://matrix.org): " HOMESERVER
+			HOMESERVER=${HOMESERVER:-https://matrix.org}
+			case "$HOMESERVER" in https://*) break;; *) echo "must start with https://" >&2;; esac
+			break
+		done
+		while true; do
+			read -r -p "Bot's full user id (e.g. @gaia-bot:matrix.org): " USER_ID
+			case "$USER_ID" in @*:*@*) ;; @*:*) break;; *) echo "must look like @name:server" >&2; continue;; esac
+			break
+		done
+		while true; do
+			read -r -p "Bot's access token (Element → Settings → Help & About → Access Token, logged in as the bot): " MTOKEN
+			[ -n "$MTOKEN" ] || { echo "token required" >&2; continue; }
+			break
+		done
+		read -r -p "Room id to allow (Element → room settings → Advanced → Internal room ID, e.g. !abc:matrix.org): " ROOM_ID
+		PLATFORM_LINE="
+  \"matrixHomeserver\": \"$HOMESERVER\",
+  \"matrixUserId\": \"$USER_ID\",
+  \"matrixAccessToken\": \"$MTOKEN\",
+  \"allowedMatrixRoomIds\": [\"$ROOM_ID\"]"
+		;;
+	esac
 	# Model: the freshly-installed llama.cpp router when the user accepted step 6's
 	# offer; otherwise leave the model unset — GAIA starts fine without one and the
 	# user picks a model interactively via /model (or edits config.json / GAIA_MODEL).
@@ -324,9 +360,7 @@ else
   \"model\": { \"provider\": \"llama-cpp\", \"id\": \"$LOCAL_MODEL\" }"
 	fi
 	cat > "$CONFIG" <<EOF
-{
-  "telegramBotToken": "$TOKEN",
-  "allowedChatIds": [$CHAT_ID]$MODEL_LINE
+{$PLATFORM_LINE$MODEL_LINE
 }
 EOF
 	chmod 600 "$CONFIG"

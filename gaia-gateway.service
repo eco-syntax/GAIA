@@ -1,5 +1,5 @@
 [Unit]
-Description=gaia-gateway (GAIA Telegram gateway)
+Description=gaia-gateway (GAIA chat gateway)
 After=network-online.target
 
 [Service]

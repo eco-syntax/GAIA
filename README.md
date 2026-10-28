@@ -88,9 +88,20 @@ cp .env.example .env
 nano .env   # or any editor
 ```
 
-In `.env`:
+In `.env` (Matrix is the default setup — a private, self-hostable chat protocol; Telegram, Slack, and Discord are also supported):
+
+1. **Create a Matrix account for the bot.** Register a dedicated account on a homeserver — [matrix.org](https://matrix.org) works, or your own/self-hosted server. Don't reuse your personal account: the bot reads everything in rooms it's allowed into.
+2. **Get the bot's access token.** Log into a Matrix client ([Element](https://element.io) is the common one) **as the bot account**, then open Settings → Help & About → Advanced → **Access Token** and copy it into `GAIA_MATRIX_ACCESS_TOKEN`. (Careful: that token grants full account access — treat it like a password, and log out of that session when done to invalidate it.)
+3. **Fill in the homeserver and user id.** `GAIA_MATRIX_HOMESERVER` is the server you registered on (e.g. `https://matrix.org`); `GAIA_MATRIX_USER_ID` is the bot's full handle (`@gaia-bot:matrix.org`).
+4. **Create a DM with the bot and allow-list the room.** From your own account, message the bot — it accepts invites and replies in rooms it's allow-listed into. Get the room id: open the conversation in Element → Room settings → Advanced → **Internal room ID** (looks like `!aBcDeFgHiJkLmNoP:matrix.org`) and put it in `GAIA_ALLOWED_MATRIX_ROOM_IDS`. Anything not in that list is ignored.
+
+<details>
+<summary>Prefer Telegram? Expand for the Telegram setup.</summary>
+
 - Set `GAIA_TELEGRAM_BOT_TOKEN` to the token [@BotFather](https://t.me/BotFather) gave you when you created your bot.
 - Set `GAIA_ALLOWED_CHAT_IDS` to your numeric chat id. To find it: message your bot once (any text), then open `https://api.telegram.org/bot<YOUR-TOKEN>/getUpdates` in a browser and look for `"chat":{"id":123456789}` in the response.
+
+</details>
 
 ### 3. Choose a model path — pick ONE
 
@@ -139,7 +150,7 @@ docker compose logs -f gateway
 
 ### 5. Verify
 
-Message your bot on Telegram and send `/status`. It should reply with its sandbox, model, and bash-gate state. Model not right? Switch any time in chat with `/model`.
+Message your bot in the chat you allow-listed (Matrix DM, Telegram, …) and send `/status`. It should reply with its sandbox, model, and bash-gate state. Model not right? Switch any time in chat with `/model`.
 
 To stop everything: `docker compose down` (add `--profile llama` if you used Option A).
 
@@ -148,13 +159,14 @@ To stop everything: `docker compose down` (add `--profile llama` if you used Opt
 ## ⚙️ Configuration
 
 ### Environment Variables (`.env`)
-- `GAIA_TELEGRAM_BOT_TOKEN`: Your Telegram bot token.
-- `GAIA_ALLOWED_CHAT_IDS`: Comma-separated allowed chat IDs.
-- `GAIA_MODEL`: Default model (e.g., `ollama/llama3`).
+- `GAIA_MATRIX_HOMESERVER` / `GAIA_MATRIX_USER_ID` / `GAIA_MATRIX_ACCESS_TOKEN`: Your Matrix homeserver, the bot's full handle, and the bot account's access token.
+- `GAIA_ALLOWED_MATRIX_ROOM_IDS`: Comma-separated Matrix room ids the bot may respond in.
+- `GAIA_TELEGRAM_BOT_TOKEN` / `GAIA_ALLOWED_CHAT_IDS`: Alternative platform — see the collapsible Telegram setup in the Quick Start.
+- `GAIA_MODEL`: Default model (e.g., `llama.cpp/Qwen3.5-9B-Q4_K_M`).
 - `LLAMA_BASE_URL`: Model server URL — only needed for the bundled llama.cpp service or an OpenAI-compatible endpoint on another host (LM Studio, Ollama, …).
 
 ### Gateway Config (`~/.gaia/config.json`)
-Used for platform tokens (Slack, Discord, Matrix) and advanced model routing:
+Used for platform tokens (Telegram, Slack, Discord) and advanced model routing:
 - `planModel`: A smaller/faster model for `/plan` mode.
 - `actModel`: A stronger model for `/act` or `/delegate` modes.
 
