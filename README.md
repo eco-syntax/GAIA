@@ -73,7 +73,20 @@ docker --version
 
 ### 2. Get GAIA and configure it
 
-Download and extract the [release ZIP](https://github.com/eco-syntax/GAIA/releases) (or `git clone https://github.com/eco-syntax/GAIA.git`), then open a terminal in that folder.
+Clone the repo and open a terminal in that folder:
+
+```powershell
+# Windows (PowerShell)
+git clone https://github.com/eco-syntax/GAIA.git
+cd GAIA
+```
+```bash
+# Mac / Linux
+git clone https://github.com/eco-syntax/GAIA.git
+cd GAIA
+```
+
+(Requires [git](https://git-scm.com/downloads).)
 
 Create your config file by copying the example:
 
