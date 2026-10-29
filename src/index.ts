@@ -399,6 +399,11 @@ if (platforms.telegram) {
 		{ command: "bash", description: "Approve or lock bash (/bash, /bash off, /bash force)" },
 	]);
 }
+// Credential checks (e.g. Matrix token validity) fail fast with a clear
+// message instead of the platform sitting in a silent retry loop.
+for (const platform of Object.values(platforms)) {
+	if (platform.verify) await platform.verify();
+}
 console.log(`gaia-gateway running (state: ${stateDir}), platforms: ${Object.keys(platforms).join(", ")}, ${listSchedules().length} schedules`);
 
 // Turns on one chat must not interleave (shared session history), so each chat

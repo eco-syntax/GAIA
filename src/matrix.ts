@@ -44,9 +44,40 @@ export function createMatrixPlatform(
 	const allowed = new Set(allowedRoomIds);
 	const base = homeserver.replace(/\/+$/, "");
 	const headers = { authorization: `Bearer ${accessToken}` };
+	/** Startup credential check: the install prompts can't validate the token
+	 * against the homeserver, so surface a bad one immediately instead of
+	 * letting sync fail in a retry loop the user never sees. */
+	const verifyToken = async (): Promise<void> => {
+		let whoami: { user_id?: string };
+		try {
+			whoami = await fetchJson<{ user_id?: string }>(
+				`${base}/_matrix/client/v3/account/whoami`,
+				{ headers },
+				"matrix whoami",
+			);
+		} catch (err) {
+			if (err && typeof err === "object" && "status" in err) {
+				const status = (err as { status?: unknown }).status;
+				if (status === 401 || status === 403) {
+					throw new Error(
+						`matrix access token rejected by ${base} (HTTP ${status}) — the token in the config is invalid or expired. ` +
+							`Log into a Matrix client as the bot account and copy a fresh token (Element → Settings → Help & About → Access Token).`,
+					);
+				}
+			}
+			throw err; // network-level: the poll loop's retry reporting covers it
+		}
+		if (whoami.user_id !== userId) {
+			throw new Error(
+				`matrix access token belongs to ${whoami.user_id ?? "an unknown user"}, but the config says the bot is ${userId} — ` +
+					`the token was created for a different account than matrixUserId.`,
+			);
+		}
+	};
 	return {
 		id: "matrix",
 		name: "Matrix",
+		verify: verifyToken,
 		async *poll(signal): AsyncGenerator<ChatMessage> {
 			let since: string | undefined;
 			// Sync can redeliver events; dedup by event id.

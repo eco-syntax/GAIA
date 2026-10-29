@@ -56,6 +56,9 @@ export interface ChatAttachment {
 export interface Platform {
 	id: string;
 	name: string;
+	/** Startup credential check (token validity against the platform). Throw to
+	 * abort startup with a clear message; omit when there's nothing to check. */
+	verify?(): Promise<void>;
 	poll(signal: AbortSignal): AsyncGenerator<ChatMessage>;
 	/** Send a text message; returns the platform message id when known (used to
 	 * delete transient status messages). */
